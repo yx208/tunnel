@@ -11,7 +11,6 @@ static CONFIG: OnceLock<Mutex<Config>> = OnceLock::new();
 pub struct Config {
     pub endpoint: String,
     pub file_path: String,
-    pub file_name: String,
     pub token: String,
 }
 

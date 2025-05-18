@@ -1,12 +1,14 @@
-use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
 use reqwest::{Client, StatusCode, Url};
 use reqwest::header::{HeaderMap, HeaderValue};
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use crate::config::get_config;
 use crate::tus::constant::TUS_RESUMABLE;
+use super::TusError;
 
 pub struct TusClient {
     client: Client,
@@ -23,6 +25,16 @@ impl TusClient {
 
         headers
     }
+
+    pub fn get_file_metadata(file_path: &Path) -> Result<String, TusError> {
+        let filename = file_path.file_name()
+            .ok_or(TusError::NotFileName)?
+            .to_str()
+            .ok_or(TusError::InvalidFileName)?;
+        let encoded_filename = BASE64_STANDARD.encode(filename);
+
+        Ok(format!("filename {}", encoded_filename))
+    }
 }
 
 impl TusClient {
@@ -34,7 +46,7 @@ impl TusClient {
         }
     }
 
-    pub(crate) async fn create_upload(&self, file_size: u64, metadata: Option<&str>) -> Result<String, Box<dyn Error>> {
+    pub(crate) async fn create_upload(&self, file_size: u64, metadata: Option<&str>) -> Result<String, TusError> {
         let mut headers = TusClient::create_headers();
         headers.insert("Upload-Length", HeaderValue::from_str(&file_size.to_string())?);
 
@@ -54,14 +66,20 @@ impl TusClient {
         let response_headers = response.headers().clone();
 
         if status != StatusCode::CREATED {
-            return Err(format!("Failed to create upload: {}", status).into());
+            return Err(TusError::UnexpectedStatus {
+                status,
+                message: String::from("Failed to create upload"),
+            });
         }
 
         let location = match response_headers.get("Location") {
-            Some(location) => location.to_str()?.to_string(),
-            None => {
-                return Err("No upload location returned from server".into());
-            }
+            Some(location) => {
+                location
+                    .to_str()
+                    .map_err(|err| TusError::Other(err.into()))?
+                    .to_string()
+            },
+            None => return Err(TusError::NotLocation)
         };
 
         if location.starts_with("http") {
@@ -73,7 +91,7 @@ impl TusClient {
         }
     }
 
-    async fn get_upload_offset(&self, upload_url: &str) -> Result<u64, Box<dyn Error>> {
+    async fn get_upload_offset(&self, upload_url: &str) -> Result<u64, TusError> {
         let headers = TusClient::create_headers();
         let response = self
             .client
@@ -83,20 +101,27 @@ impl TusClient {
             .await?;
 
         if response.status() != StatusCode::OK {
-            return Err(format!("Failed to get upload offset: {}", response.status()).into());
+            return Err(TusError::UnexpectedStatus {
+                status: response.status(),
+                message: String::from("Failed to get upload offset"),
+            });
         }
 
         let offset = match response.headers().get("Upload-Offset") {
-            Some(offset)  => offset.to_str()?.parse::<u64>()?,
-            None => {
-                return Err("No upload offset returned from server".into());
-            }
+            Some(offset) => {
+                offset
+                    .to_str()
+                    .map_err(|err| TusError::Other(err.into()))?
+                    .parse::<u64>()
+                    .map_err(|err| TusError::Other(err.into()))?
+            },
+            None => return Err(TusError::NotOffset)
         };
 
         Ok(offset)
     }
 
-    async fn upload_chunk(&self, upload_url: &str, file: &mut File, offset: u64) -> Result<u64, Box<dyn Error>> {
+    async fn upload_chunk(&self, upload_url: &str, file: &mut File, offset: u64) -> Result<u64, TusError> {
         let mut buffer = vec![0; self.chunk_size];
         file.seek(SeekFrom::Start(offset))?;
         let bytes_read = file.read(&mut buffer)?;
@@ -121,33 +146,40 @@ impl TusClient {
             .await?;
 
         if response.status() != StatusCode::NO_CONTENT {
-            return Err(format!("Failed to upload chunk: {}", response.status()).into());
+            return Err(TusError::UnexpectedStatus {
+                status: response.status(),
+                message: String::from("Failed to upload chunk"),
+            });
         }
 
         let new_offset = match response.headers().get("Upload-Offset") {
-            Some(new_offset) => new_offset.to_str()?.parse::<u64>()?,
-            None => {
-                return Err("No upload offset returned from server".into());
-            }
+            Some(offset) => {
+                offset
+                    .to_str()
+                    .map_err(|err| TusError::Other(err.into()))?
+                    .parse::<u64>()
+                    .map_err(|err| TusError::Other(err.into()))?
+            },
+            None => return Err(TusError::NotOffset)
         };
 
         Ok(new_offset)
     }
 
-    pub async fn upload_file(&self, file_path: &str, metadata: Option<&str>) -> Result<String, Box<dyn Error>> {
+    pub async fn upload_file(&self, file_path: &str) -> Result<String, TusError> {
         let path = Path::new(file_path);
         let mut file = File::open(path)?;
 
         let file_size = file.metadata()?.len();
-        let upload_url = self.create_upload(file_size, metadata).await?;
+        let upload_url = self.create_upload(file_size, None).await?;
 
         let mut offset = self.get_upload_offset(&upload_url).await?;
-        
+
         while offset < file_size {
             offset = self.upload_chunk(&upload_url, &mut file, offset).await?;
-            
+
             tokio::time::sleep(Duration::from_secs(1)).await;
-            
+
             println!("Uploaded: {}/{} bytes ({}%)",
                      offset,
                      file_size,
