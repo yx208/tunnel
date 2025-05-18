@@ -9,7 +9,10 @@ static CONFIG: OnceLock<Mutex<Config>> = OnceLock::new();
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
-    pub endpoint: String
+    pub endpoint: String,
+    pub file_path: String,
+    pub file_name: String,
+    pub token: String,
 }
 
 impl Config {
