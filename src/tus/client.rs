@@ -2,18 +2,32 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Body, Client, StatusCode, Url};
 use reqwest::header::{HeaderMap, HeaderValue};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
+use tokio::{
+    fs::File as TokioFile,
+    io::AsyncReadExt,
+    io::AsyncSeekExt,
+};
+use tokio_util::codec::{BytesCodec, FramedRead};
+use futures_util::StreamExt;
 use crate::config::get_config;
 use crate::tus::constant::TUS_RESUMABLE;
 use super::TusError;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UploadStrategy {
+    Chunked,
+    SingleRequest,
+}
 
 pub struct TusClient {
     client: Client,
     endpoint: String,
     chunk_size: usize,
+    strategy: UploadStrategy,
 }
 
 impl TusClient {
@@ -35,6 +49,21 @@ impl TusClient {
 
         Ok(format!("filename {}", encoded_filename))
     }
+
+    pub fn parse_offset_header(headers: &HeaderMap) -> Result<u64, TusError> {
+        match headers.get("Upload-Offset") {
+            Some(header_value) => {
+                let offset = header_value
+                    .to_str()
+                    .map_err(|err| TusError::Other(err.into()))?
+                    .parse::<u64>()
+                    .map_err(|err| TusError::Other(err.into()))?;
+
+                Ok(offset)
+            },
+            None => Err(TusError::NotOffset)
+        }
+    }
 }
 
 impl TusClient {
@@ -43,6 +72,21 @@ impl TusClient {
             client: Client::new(),
             endpoint: endpoint.to_string(),
             chunk_size,
+            strategy: UploadStrategy::Chunked
+        }
+    }
+
+    pub fn with_strategy(endpoint: &str, chunk_size: usize, strategy: UploadStrategy) -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self {
+            client,
+            chunk_size,
+            strategy,
+            endpoint: endpoint.to_string(),
         }
     }
 
@@ -107,16 +151,7 @@ impl TusClient {
             });
         }
 
-        let offset = match response.headers().get("Upload-Offset") {
-            Some(offset) => {
-                offset
-                    .to_str()
-                    .map_err(|err| TusError::Other(err.into()))?
-                    .parse::<u64>()
-                    .map_err(|err| TusError::Other(err.into()))?
-            },
-            None => return Err(TusError::NotOffset)
-        };
+        let offset = TusClient::parse_offset_header(&response.headers())?;
 
         Ok(offset)
     }
@@ -152,16 +187,7 @@ impl TusClient {
             });
         }
 
-        let new_offset = match response.headers().get("Upload-Offset") {
-            Some(offset) => {
-                offset
-                    .to_str()
-                    .map_err(|err| TusError::Other(err.into()))?
-                    .parse::<u64>()
-                    .map_err(|err| TusError::Other(err.into()))?
-            },
-            None => return Err(TusError::NotOffset)
-        };
+        let new_offset = TusClient::parse_offset_header(&response.headers())?;
 
         Ok(new_offset)
     }
@@ -173,10 +199,26 @@ impl TusClient {
         let file_size = file.metadata()?.len();
         let upload_url = self.create_upload(file_size, None).await?;
 
+        match self.strategy {
+            UploadStrategy::Chunked => {
+                self.upload_file_chunked(&upload_url, &mut file, file_size).await?;
+            },
+            UploadStrategy::SingleRequest => {
+                drop(file);
+                self.upload_file_single_request(&upload_url, file_path, file_size).await?;
+            }
+        }
+
+        Ok(upload_url)
+    }
+
+    async fn upload_file_chunked(&self, upload_url: &str, file: &mut File, file_size: u64)
+        -> Result<(), TusError>
+    {
         let mut offset = self.get_upload_offset(&upload_url).await?;
 
         while offset < file_size {
-            offset = self.upload_chunk(&upload_url, &mut file, offset).await?;
+            offset = self.upload_chunk(&upload_url, file, offset).await?;
 
             tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -187,7 +229,45 @@ impl TusClient {
             );
         }
 
-        Ok(upload_url)
+        Ok(())
+    }
+
+    async fn upload_file_single_request(&self, upload_url: &str, file_path: &str, file_size: u64)
+        -> Result<(), TusError>
+    {
+        let offset = self.get_upload_offset(upload_url).await?;
+
+        if  offset >= file_size {
+            return Ok(());
+        }
+
+        let mut file = TokioFile::open(file_path).await?;
+
+        file.seek(SeekFrom::Start(offset)).await?;
+
+        // Use tokio_util's FramedRead to create a stream
+        let stream = FramedRead::new(file, BytesCodec::new());
+        let body = Body::wrap_stream(stream);
+        let mut headers = TusClient::create_headers();
+        headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
+        headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
+
+        let response = self
+            .client
+            .patch(upload_url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await?;
+
+        if response.status() != StatusCode::NO_CONTENT {
+            return Err(TusError::UnexpectedStatus {
+                status: response.status(),
+                message: String::from("Failed to upload chunk"),
+            });
+        }
+
+        Ok(())
     }
 }
 
