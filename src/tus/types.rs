@@ -68,14 +68,10 @@ impl TusClient {
 
     pub fn parse_offset_header(headers: &HeaderMap) -> Result<u64, TusError> {
         match headers.get("Upload-Offset") {
-            Some(header_value) => {
-                let offset = header_value
-                    .to_str()?
-                    .parse::<u64>()?;
-
-                Ok(offset)
+            Some(value) => {
+                Ok(value.to_str()?.parse::<u64>()?)
             },
-            None => Err(TusError::ProtocolError("No 'upload-offset' response header".to_string()))
+            None => Err(TusError::ProtocolError("No 'upload-offset' header in response".to_string()))
         }
     }
 }

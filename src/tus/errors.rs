@@ -8,6 +8,9 @@ pub enum TusError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
+    #[error("Context error: {0}")]
+    ContextError(#[from] anyhow::Error),
+
     #[error("Server error: status code {status_code}, message: {message}")]
     ServerError {
         status_code: u16,
@@ -19,6 +22,9 @@ pub enum TusError {
 
     #[error("Protocol error: {0}")]
     ProtocolError(String),
+
+    #[error("Unexpected status code: {0}")]
+    UnexpectedStatusCode(reqwest::StatusCode),
 
     #[error("Invalid response: {0}")]
     InvalidResponse(String),
