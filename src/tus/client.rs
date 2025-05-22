@@ -38,7 +38,7 @@ impl TusClient {
         }
     }
 
-    pub async fn create_upload(&self, file_size: u64, metadata: Option<&str>) -> Result<String> {
+    async fn create_upload(&self, file_size: u64, metadata: Option<&str>) -> Result<String> {
         let mut headers = TusClient::create_headers();
         headers.insert("Upload-Length", HeaderValue::from_str(&file_size.to_string())?);
 
@@ -72,7 +72,7 @@ impl TusClient {
         }
     }
 
-    pub async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
+    async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
         let headers = TusClient::create_headers();
 
         let response = self
@@ -91,7 +91,7 @@ impl TusClient {
         Ok(offset)
     }
 
-    pub async fn upload_chunk(&self, upload_url: &str, file: &mut File, offset: u64) -> Result<u64> {
+    async fn upload_chunk(&self, upload_url: &str, file: &mut File, offset: u64) -> Result<u64> {
         file.seek(SeekFrom::Start(offset))?;
         let mut buffer = vec![0; self.chunk_size];
         let bytes_read = file.read(&mut buffer)?;
@@ -281,6 +281,7 @@ impl TusClient {
              }
              UploadStrategy::SingleRequest => {
                  drop(file);
+                 self.upload_file_single_request(&upload_url, &file_path, file_size).await?;
              }
          };
 
