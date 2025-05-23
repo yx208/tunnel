@@ -1,18 +1,17 @@
 use anyhow::Context;
 use reqwest::header::HeaderValue;
-use reqwest::{Body, Client, StatusCode};
+use reqwest::{Client, StatusCode};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::fs::File as TokioFile;
 use url::Url;
 
 use super::errors::{Result, TusError};
 use super::types::{TusClient, UploadStrategy};
 use crate::tus::metadata::Metadata;
-use tokio::io::AsyncSeekExt;
-use tokio_util::codec::{BytesCodec, FramedRead};
+use crate::tus::progress::{ProgressCallback, ProgressInfo};
 
 impl TusClient {
     pub fn new(endpoint: &str, chunk_size: usize) -> Self {
@@ -211,53 +210,13 @@ impl TusClient {
         Ok(())
     }
 
-    async fn upload_file_single_request(
+    async fn upload_file_streaming(
         &self,
         upload_url: &str,
         file_path: &str,
         file_size: u64,
+        progress_callback: Option<ProgressCallback>
     ) -> Result<()> {
-        let offset = self.get_upload_offset(upload_url).await?;
-
-        if offset > file_size {
-            return Ok(());
-        }
-
-        let mut file = TokioFile::open(file_path)
-            .await
-            .with_context(|| format!("Failed to open file: {}", file_path))?;
-
-        file.seek(SeekFrom::Start(offset))
-            .await
-            .with_context(|| "Failed to seek to offset")?;
-
-        let stream = FramedRead::new(file, BytesCodec::new());
-        let body = Body::wrap_stream(stream);
-
-        let mut headers = TusClient::create_headers();
-        headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
-        headers.insert(
-            "Content-Type",
-            HeaderValue::from_static("application/offset+octet-stream"),
-        );
-
-        let response = self
-            .client
-            .patch(upload_url)
-            .headers(headers)
-            .body(body)
-            .send()
-            .await
-            .context("Failed to send file upload request")?;
-
-        let status = response.status();
-        if status != StatusCode::NO_CONTENT {
-            return Err(TusError::server_error(
-                status.as_u16(),
-                format!("Failed to upload file: unexpected status {}", status),
-            ));
-        }
-
         Ok(())
     }
 
@@ -280,8 +239,20 @@ impl TusClient {
             }
             UploadStrategy::Streaming => {
                 drop(file);
-                self.upload_file_single_request(&upload_url, &file_path, file_size)
-                    .await?;
+
+                let callback = Arc::new(|info: ProgressInfo| {
+                    let eta_str = info.eta
+                        .map(|d| format!(", ETA: {}s", d.as_secs()))
+                        .unwrap_or_default();
+
+                    println!(
+                        "{:.2} MB/s{}",
+                        info.instant_speed / (1024.0 * 1024.0),
+                        eta_str
+                    );
+                });
+
+                self.upload_file_streaming(&upload_url, &file_path, file_size, Some(callback)).await?;
             }
         };
 

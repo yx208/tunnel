@@ -1,6 +1,12 @@
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use bytes::Bytes;
+use futures::Stream;
 use parking_lot::Mutex;
+use pin_project_lite::pin_project;
+use crate::tus::types::UploadStrategy;
 
 pub struct ProgressInfo {
     /// 已上传字节数
@@ -68,7 +74,7 @@ impl SpeedCalculator {
         }
     }
 
-    /// 瞬时速度计算
+    /// 瞬时速度
     fn instant_speed(&self) -> f64 {
         // 1 个或没有
         if self.samples.len() < 2 {
@@ -140,6 +146,114 @@ impl ProgressTracker {
             last_update: Arc::new(Mutex::new(Instant::now())),
             callback: None,
             update_interval: Duration::from_secs(1),
+        }
+    }
+
+    pub fn with_callback<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(ProgressInfo) + Sync + Send + 'static,
+    {
+        self.callback = Some(Arc::new(callback));
+        self
+    }
+
+    pub fn with_update_interval(mut self, interval: Duration) -> Self {
+        self.update_interval = interval;
+        self
+    }
+
+    /// 累加字节
+    fn record_bytes(&self, bytes: u64) {
+        let mut bytes_transferred = self.bytes_transferred.lock();
+        *bytes_transferred += bytes;
+
+        let total_transferred = *bytes_transferred;
+        drop(bytes_transferred);
+
+        let now = Instant::now();
+
+        // 快速检查是否需要更新
+        {
+            let last_update = self.last_update.lock();
+            if now.duration_since(*last_update) < self.update_interval {
+                return;
+            }
+        }
+
+        let mut last_update = self.last_update.lock();
+        let mut speed_calc = self.speed_calc.lock();
+
+        // 双重检查（避免竞态条件）
+        if now.duration_since(*last_update) >= self.update_interval {
+            speed_calc.add_sample(bytes);
+
+            let actual_uploaded = self.initial_offset + total_transferred;
+            let percentage = (actual_uploaded as f64 / self.total_bytes as f64) * 100.0;
+            let instant_speed = speed_calc.instant_speed();
+            let average_speed = speed_calc.average_speed();
+
+            let remaining_bytes = self.total_bytes.saturating_sub(actual_uploaded);
+
+            // 预计剩余时间
+            let eta = if instant_speed > 0.0 {
+                Some(Duration::from_secs_f64(remaining_bytes as f64 / instant_speed))
+            } else if average_speed > 0.0 {
+                Some(Duration::from_secs_f64(remaining_bytes as f64 / average_speed))
+            } else {
+                None
+            };
+
+            let info = ProgressInfo {
+                bytes_uploaded: actual_uploaded,
+                total_bytes: self.total_bytes,
+                instant_speed,
+                average_speed,
+                eta,
+                percentage
+            };
+
+            if let Some(ref callback) = self.callback {
+                callback(info);
+            }
+
+            *last_update = now;
+        }
+    }
+}
+
+pin_project! {
+    pub struct ProgressStream<S> {
+        #[pin]
+        inner: S,
+        tracker: Arc<ProgressTracker>,
+    }
+}
+
+impl <S> ProgressStream<S> {
+    pub fn new(inner: S, tracker: Arc<ProgressTracker>) -> Self {
+        Self { inner, tracker }
+    }
+}
+
+impl<S> Stream for ProgressStream<S>
+where 
+    S: Stream<Item = std::io::Result<Bytes>>,
+{
+    type Item = std::io::Result<Bytes>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        
+        match this.inner.poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                let bytes_len = chunk.len();
+                if bytes_len > 0 {
+                    this.tracker.record_bytes(bytes_len as u64);
+                }
+                
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            other => other
         }
     }
 }
