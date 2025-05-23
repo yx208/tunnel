@@ -10,7 +10,7 @@ use crate::tus::errors::TusError;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UploadStrategy {
     Chunked,
-    SingleRequest
+    Streaming
 }
 
 #[derive(Debug, Clone)]

@@ -4,3 +4,4 @@ pub mod errors;
 pub mod types;
 pub mod metadata;
 mod config;
+mod progress;

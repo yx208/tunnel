@@ -278,7 +278,7 @@ impl TusClient {
                 self.upload_file_chunked(&upload_url, &mut file, file_size)
                     .await?;
             }
-            UploadStrategy::SingleRequest => {
+            UploadStrategy::Streaming => {
                 drop(file);
                 self.upload_file_single_request(&upload_url, &file_path, file_size)
                     .await?;
