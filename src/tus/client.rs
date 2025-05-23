@@ -82,7 +82,7 @@ impl TusClient {
             .send()
             .await?;
 
-        if response.status() != StatusCode::OK {
+        if response.status() != StatusCode::OK && response.status() != StatusCode::NO_CONTENT {
             return Err(TusError::UnexpectedStatusCode(response.status()));
         }
 
