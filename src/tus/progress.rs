@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use parking_lot::Mutex;
 
 pub struct ProgressInfo {
     /// 已上传字节数
@@ -81,30 +82,30 @@ impl SpeedCalculator {
             for i in 0..recent_count {
                 samples.push(self.samples[(start + i) % self.max_samples]);
             }
-            
+
             samples
         } else {
             // 缓冲区未满，取 samples 后面的 recent_count 个样本
             self.samples[self.samples.len() - recent_count..].to_vec()
         };
-        
+
         if recent_samples.len() < 2 {
             return 0.0;
         }
-        
+
         let total_bytes: u64 = recent_samples.iter().map(|(_, b)| b).sum();
         // 计算第一个跟最后一个样本的时间差
         let duration = recent_samples.last().unwrap().0
             .duration_since(recent_samples.first().unwrap().0)
             .as_secs_f64();
-        
+
         if duration > 0.0 {
             total_bytes as f64 / duration
         } else {
             0.0
         }
     }
-    
+
     /// 平均速度
     fn average_speed(&self) -> f64 {
         let elapsed = self.start_time.elapsed().as_secs_f64();
@@ -112,6 +113,31 @@ impl SpeedCalculator {
             self.total_bytes as f64 / elapsed
         } else {
             0.0
+        }
+    }
+}
+
+/// 进度追踪器
+pub struct ProgressTracker {
+    total_bytes: u64,
+    initial_offset: u64,
+    bytes_transferred: Arc<Mutex<u64>>,
+    speed_calc: Arc<Mutex<SpeedCalculator>>,
+    last_update: Arc<Mutex<Instant>>,
+    callback: Option<ProgressCallback>,
+    update_interval: Duration,
+}
+
+impl ProgressTracker {
+    pub fn new(total_bytes: u64, initial_offset: u64) -> Self {
+        Self {
+            total_bytes,
+            initial_offset,
+            bytes_transferred: Arc::new(Mutex::new(0)),
+            speed_calc: Arc::new(Mutex::new(SpeedCalculator::new(20))),
+            last_update: Arc::new(Mutex::new(Instant::now())),
+            callback: None,
+            update_interval: Duration::from_secs(1),
         }
     }
 }
