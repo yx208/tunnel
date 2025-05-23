@@ -288,7 +288,7 @@ impl TusClient {
         Ok(upload_url)
     }
 
-    pub async fn delete_upload(&self, upload_url: &str) -> Result<()> {
+    pub async fn cancel_upload(&self, upload_url: &str) -> Result<()> {
         let headers = TusClient::create_headers();
 
         let response = self
@@ -300,7 +300,7 @@ impl TusClient {
 
         let status = response.status();
         if !status.is_success() && status != StatusCode::NOT_FOUND {
-            return Err(TusError::server_error(status.as_u16(), "Failed to delete upload"));
+            return Err(TusError::server_error(status.as_u16(), "Failed to cancel upload"));
         }
 
         Ok(())
