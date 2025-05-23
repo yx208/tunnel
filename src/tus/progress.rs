@@ -29,6 +29,7 @@ struct SpeedCalculator {
     /// 采样的时间跟字节
     samples: Vec<(Instant, u64)>,
 
+    /// 最大采样
     max_samples: usize,
 
     /// 下一个要写入的位置
@@ -37,6 +38,7 @@ struct SpeedCalculator {
     /// 累计所有传输的字节数，用于计算整体平均速度
     total_bytes: u64,
 
+    /// 开始时间
     start_time: Instant,
 }
 
