@@ -1,21 +1,18 @@
+use anyhow::Context;
+use reqwest::header::HeaderValue;
+use reqwest::{Body, Client, StatusCode};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
-use anyhow::Context;
-use bytes::Bytes;
-use futures_util::{Stream, StreamExt};
-use reqwest::{Body, Client, StatusCode};
-use reqwest::header::HeaderValue;
+use tokio::fs::File as TokioFile;
 use url::Url;
-use tokio::{
-    fs::File as TokioFile,
-};
 
+use super::errors::{Result, TusError};
+use super::types::{TusClient, UploadStrategy};
+use crate::tus::metadata::Metadata;
 use tokio::io::AsyncSeekExt;
 use tokio_util::codec::{BytesCodec, FramedRead};
-use super::types::{TusClient, UploadStrategy};
-use super::errors::{Result, TusError};
 
 impl TusClient {
     pub fn new(endpoint: &str, chunk_size: usize) -> Self {
@@ -24,7 +21,7 @@ impl TusClient {
             chunk_size,
             endpoint: endpoint.to_string(),
             strategy: UploadStrategy::Chunked,
-            speed_limit: None
+            speed_limit: None,
         }
     }
 
@@ -38,12 +35,12 @@ impl TusClient {
         }
     }
 
-    async fn create_upload(&self, file_size: u64, metadata: Option<&str>) -> Result<String> {
+    async fn create_upload(&self, file_size: u64, metadata: Option<Metadata>) -> Result<String> {
         let mut headers = TusClient::create_headers();
-        headers.insert("Upload-Length", HeaderValue::from_str(&file_size.to_string())?);
+        headers.insert("Upload-Length", file_size.to_string().parse()?);
 
         if let Some(meta) = metadata {
-            headers.insert("Upload-Metadata", HeaderValue::from_str(meta)?);
+            headers.insert("Upload-Metadata", meta.to_header().parse()?);
         }
 
         let response = self
@@ -54,18 +51,24 @@ impl TusClient {
             .await?;
 
         if response.status() != StatusCode::CREATED {
-            return Err(TusError::UnexpectedStatusCode(response.status()));
+            return Err(TusError::server_error(response.status().as_u16(), "Failed to create upload"));
         }
 
         let location = match response.headers().get("location") {
             Some(loc) => loc.to_str()?.to_string(),
-            None => return Err(TusError::ProtocolError("Not 'location' header in response".to_string())),
+            None => {
+                return Err(TusError::server_error(
+                    response.status().as_u16(),
+                    "Not 'location' header in response",
+                ));
+            }
         };
 
         if location.starts_with("http") {
             Ok(location)
         } else {
-            let url = Url::parse(&self.endpoint)?;
+            let url = Url::parse(&self.endpoint)
+                .map_err(|_e| TusError::ParamError(format!("Invalid url: {:?}", self.endpoint)))?;
             let origin = url.origin().ascii_serialization();
 
             Ok(format!("{}{}", origin, location))
@@ -75,18 +78,14 @@ impl TusClient {
     async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
         let headers = TusClient::create_headers();
 
-        let response = self
-            .client
-            .head(upload_url)
-            .headers(headers)
-            .send()
-            .await?;
+        let response = self.client.head(upload_url).headers(headers).send().await?;
 
+        let status = response.status();
         if response.status() != StatusCode::OK && response.status() != StatusCode::NO_CONTENT {
-            return Err(TusError::UnexpectedStatusCode(response.status()));
+            return Err(TusError::server_error(response.status().as_u16(), "Failed to get upload offset"));
         }
 
-        let offset = TusClient::parse_offset_header(response.headers())?;
+        let offset = TusClient::parse_offset_header(status.as_u16(), response.headers())?;
 
         Ok(offset)
     }
@@ -97,14 +96,17 @@ impl TusClient {
         let bytes_read = file.read(&mut buffer)?;
 
         if bytes_read == 0 {
-            return Ok(offset)
+            return Ok(offset);
         }
 
         buffer.truncate(bytes_read);
 
         let mut headers = TusClient::create_headers();
         headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
-        headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_static("application/offset+octet-stream"),
+        );
 
         let response = self
             .client
@@ -114,16 +116,17 @@ impl TusClient {
             .send()
             .await?;
 
-        if response.status() != StatusCode::NO_CONTENT {
-            return Err(TusError::UnexpectedStatusCode(response.status()));
+        let status = response.status();
+        if status != StatusCode::NO_CONTENT {
+            return Err(TusError::server_error(status.as_u16(), "Failed to patch file"));
         }
 
-        let next_offset = TusClient::parse_offset_header(response.headers())?;
+        let next_offset = TusClient::parse_offset_header(status.as_u16(), response.headers())?;
 
         Ok(next_offset)
     }
 
-    async fn upload_file_chunked(&self, upload_url: &str, file: &mut File, file_size: u64) -> Result<()> {
+    async fn upload_file_chunked(&self, upload_url: &str, file: &mut File, file_size: u64, ) -> Result<()> {
         // 总是等于 已上传大小 + ChunkSize
         let mut offset = self.get_upload_offset(upload_url).await?;
 
@@ -163,17 +166,20 @@ impl TusClient {
                 last_progress_update = now;
                 bytes_since_last_update = 0;
             } else {
-                println!("Uploaded (chunked): {}/{} bytes ({}%)",
-                         offset,
-                         file_size,
-                         (offset as f64 / file_size as f64 * 100.0) as u64
+                println!(
+                    "Uploaded (chunked): {}/{} bytes ({}%)",
+                    offset,
+                    file_size,
+                    (offset as f64 / file_size as f64 * 100.0) as u64
                 );
             }
 
             // If speed limit
             if let Some(max_bytes_per_sec) = self.speed_limit {
                 // 开始到现在过去了多久（秒）
-                let current_elapsed = std::time::Instant::now().duration_since(start_time).as_secs_f64();
+                let current_elapsed = std::time::Instant::now()
+                    .duration_since(start_time)
+                    .as_secs_f64();
                 // 按照当前过去的时间跟已上传的总字节，计算出按照目前网速每秒能上传的速度
                 let current_rate = offset as f64 / current_elapsed;
 
@@ -205,24 +211,12 @@ impl TusClient {
         Ok(())
     }
 
-    async fn create_upload_stream(&self, file_path: &str, offset: u64)
-        -> Result<FramedRead<TokioFile, BytesCodec>>
-    {
-        let mut file = TokioFile::open(file_path)
-            .await
-            .with_context(|| format!("Failed to open file: {}", file_path))?;
-
-        file.seek(SeekFrom::Start(offset))
-            .await
-            .with_context(|| "Failed to seek to offset")?;
-
-        let codec = BytesCodec::new();
-        let stream = FramedRead::new(file, codec);
-
-        Ok(stream)
-    }
-
-    async fn upload_file_single_request(&self, upload_url: &str, file_path: &str, file_size: u64) -> Result<()> {
+    async fn upload_file_single_request(
+        &self,
+        upload_url: &str,
+        file_path: &str,
+        file_size: u64,
+    ) -> Result<()> {
         let offset = self.get_upload_offset(upload_url).await?;
 
         if offset > file_size {
@@ -242,7 +236,10 @@ impl TusClient {
 
         let mut headers = TusClient::create_headers();
         headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
-        headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_static("application/offset+octet-stream"),
+        );
 
         let response = self
             .client
@@ -264,27 +261,48 @@ impl TusClient {
         Ok(())
     }
 
-     pub async fn upload_file(&self, file_path: &str, metadata: Option<&str>) -> Result<String> {
-         let path = Path::new(file_path);
-         let mut file = File::open(path)
-             .with_context(|| format!("Failed to open file: {}", file_path))?;
+    pub async fn upload_file(&self, file_path: &str, metadata: Option<Metadata>) -> Result<String> {
+        let path = Path::new(file_path);
+        let mut file =
+            File::open(path).with_context(|| format!("Failed to open file: {}", file_path))?;
 
-         let file_size = file.metadata()
-             .with_context(|| format!("Failed to get metadata for file: {}", file_path))?
-             .len();
+        let file_size = file
+            .metadata()
+            .with_context(|| format!("Failed to get metadata for file: {}", file_path))?
+            .len();
 
-         let upload_url = self.create_upload(file_size, metadata).await?;
+        let upload_url = self.create_upload(file_size, metadata).await?;
 
-         match self.strategy {
-             UploadStrategy::Chunked => {
-                self.upload_file_chunked(&upload_url, &mut file, file_size).await?;
-             }
-             UploadStrategy::SingleRequest => {
-                 drop(file);
-                 self.upload_file_single_request(&upload_url, &file_path, file_size).await?;
-             }
-         };
+        match self.strategy {
+            UploadStrategy::Chunked => {
+                self.upload_file_chunked(&upload_url, &mut file, file_size)
+                    .await?;
+            }
+            UploadStrategy::SingleRequest => {
+                drop(file);
+                self.upload_file_single_request(&upload_url, &file_path, file_size)
+                    .await?;
+            }
+        };
 
-         Ok(upload_url)
-     }
+        Ok(upload_url)
+    }
+
+    pub async fn delete_upload(&self, upload_url: &str) -> Result<()> {
+        let headers = TusClient::create_headers();
+
+        let response = self
+            .client
+            .delete(upload_url)
+            .headers(headers)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() && status != StatusCode::NOT_FOUND {
+            return Err(TusError::server_error(status.as_u16(), "Failed to delete upload"));
+        }
+
+        Ok(())
+    }
 }

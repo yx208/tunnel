@@ -20,12 +20,6 @@ pub enum TusError {
     #[error("To str error: {0}")]
     ToStrError(#[from] reqwest::header::ToStrError),
 
-    #[error("Protocol error: {0}")]
-    ProtocolError(String),
-
-    #[error("Unexpected status code: {0}")]
-    UnexpectedStatusCode(reqwest::StatusCode),
-
     #[error("Invalid response: {0}")]
     InvalidResponse(String),
 
@@ -35,8 +29,8 @@ pub enum TusError {
         message: String,
     },
 
-    #[error("URL parse error: {0}")]
-    UrlParseError(#[from] url::ParseError),
+    #[error("Param error: {0}")]
+    ParamError(String),
 
     #[error("Integer parse error: {0}")]
     IntParseError(#[from] std::num::ParseIntError),
