@@ -55,6 +55,9 @@ pub enum TusError {
 
     #[error("Operation error: {0}")]
     OperationError(String),
+    
+    #[error("Internal error: {0}")]
+    InternalError(String),
 }
 
 impl TusError {

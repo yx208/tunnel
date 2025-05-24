@@ -75,11 +75,3 @@ impl TusClient {
         }
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct UploadProgress {
-    pub bytes_uploaded: u64,
-    pub total_bytes: u64,
-    pub speed: f64,
-    pub percentage: f64
-}

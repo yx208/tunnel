@@ -212,7 +212,7 @@ impl TusClient {
         Ok(())
     }
 
-    async fn upload_file_streaming(
+    pub async fn upload_file_streaming(
         &self,
         upload_url: &str,
         file_path: &str,
@@ -276,7 +276,7 @@ impl TusClient {
         headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
         headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
         headers.insert("Content-Length", HeaderValue::from_str(&remaining_size.to_string())?);
-        
+
         let response = self.client
             .patch(upload_url)
             .headers(headers)
