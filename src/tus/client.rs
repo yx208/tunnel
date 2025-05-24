@@ -7,11 +7,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
-
+use tokio::fs::File as TokioFile;
+use tokio::io::AsyncSeekExt;
+use tokio_util::io::ReaderStream;
 use super::errors::{Result, TusError};
 use super::types::{TusClient, UploadStrategy};
 use crate::tus::metadata::Metadata;
-use crate::tus::progress::{ProgressCallback, ProgressInfo};
+use crate::tus::progress::{ProgressCallback, ProgressInfo, ProgressStream, ProgressTracker};
 
 impl TusClient {
     pub fn new(endpoint: &str, chunk_size: usize) -> Self {
@@ -217,6 +219,88 @@ impl TusClient {
         file_size: u64,
         progress_callback: Option<ProgressCallback>
     ) -> Result<()> {
+        let offset = self.get_upload_offset(upload_url).await?;
+
+        if offset > file_size {
+            if let Some(callback) = progress_callback {
+                callback(ProgressInfo {
+                    bytes_uploaded: file_size,
+                    total_bytes: file_size,
+                    instant_speed: 0.0,
+                    average_speed: 0.0,
+                    eta: None,
+                    percentage: 0.0,
+                });
+            }
+
+            return Ok(());
+        }
+
+        let file = TokioFile::open(file_path).await
+            .with_context(|| format!("Failed to open file: {}", file_path))?;
+
+        let mut file = file.try_clone().await?;
+        file.seek(SeekFrom::Start(offset)).await?;
+
+        // 64KB
+        let reader_stream = ReaderStream::with_capacity(file, 64 * 1024);
+
+        let body = if let Some(callback) = progress_callback {
+            let tracker = Arc::new(
+                ProgressTracker::new(file_size, offset)
+                    .with_arc_callback(callback)
+                    .with_update_interval(Duration::from_millis(500))
+            );
+
+            // 立即发送初始进度
+            if offset > 0 {
+                let initial_info = ProgressInfo {
+                    bytes_uploaded: offset,
+                    total_bytes: file_size,
+                    instant_speed: 0.0,
+                    average_speed: 0.0,
+                    eta: None,
+                    percentage: (offset as f64 / file_size as f64) * 100.0,
+                };
+                (tracker.callback.as_ref().unwrap())(initial_info);
+            }
+
+            let progress_stream = ProgressStream::new(reader_stream, tracker);
+            reqwest::Body::wrap_stream(progress_stream)
+        } else {
+            reqwest::Body::wrap_stream(reader_stream)
+        };
+
+        let remaining_size = file_size - offset;
+        let mut headers = TusClient::create_headers();
+        headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
+        headers.insert("Content-Length", HeaderValue::from_str(&remaining_size.to_string())?);
+        
+        let response = self.client
+            .patch(upload_url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await?;
+
+        // 验证响应
+        let status = response.status();
+        if status != StatusCode::NO_CONTENT {
+            return Err(TusError::server_error(
+                status.as_u16(),
+                format!("Upload failed with status {}", status),
+            ));
+        }
+
+        // 验证最终偏移量
+        let final_offset = TusClient::parse_offset_header(status.as_u16(), response.headers())?;
+        if final_offset != file_size {
+            return Err(TusError::UploadIncomplete {
+                expected: file_size,
+                actual: final_offset,
+            });
+        }
+
         Ok(())
     }
 
@@ -242,7 +326,7 @@ impl TusClient {
 
                 let callback = Arc::new(|info: ProgressInfo| {
                     let eta_str = info.eta
-                        .map(|d| format!(", ETA: {}s", d.as_secs()))
+                        .map(|d| format!("ETA: {}s", d.as_secs()))
                         .unwrap_or_default();
 
                     println!(
@@ -251,6 +335,8 @@ impl TusClient {
                         eta_str
                     );
                 });
+
+                println!("{}", &upload_url);
 
                 self.upload_file_streaming(&upload_url, &file_path, file_size, Some(callback)).await?;
             }

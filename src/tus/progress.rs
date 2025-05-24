@@ -132,8 +132,8 @@ pub struct ProgressTracker {
     bytes_transferred: Arc<Mutex<u64>>,
     speed_calc: Arc<Mutex<SpeedCalculator>>,
     last_update: Arc<Mutex<Instant>>,
-    callback: Option<ProgressCallback>,
     update_interval: Duration,
+    pub callback: Option<ProgressCallback>,
 }
 
 impl ProgressTracker {
@@ -147,6 +147,12 @@ impl ProgressTracker {
             callback: None,
             update_interval: Duration::from_secs(1),
         }
+    }
+
+    pub fn with_arc_callback(mut self, callback: ProgressCallback) -> Self
+    {
+        self.callback = Some(callback);
+        self
     }
 
     pub fn with_callback<F>(mut self, callback: F) -> Self

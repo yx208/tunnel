@@ -16,6 +16,12 @@ pub enum TusError {
         status_code: u16,
         message: String,
     },
+
+    #[error("Upload incomplete expected: {expected}, actual: {actual}")]
+    UploadIncomplete {
+        expected: u64,
+        actual: u64,
+    },
     
     #[error("To str error: {0}")]
     ToStrError(#[from] reqwest::header::ToStrError),
