@@ -6,7 +6,6 @@ use bytes::Bytes;
 use futures::Stream;
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
-use crate::tus::types::UploadStrategy;
 
 pub struct ProgressInfo {
     /// 已上传字节数
@@ -149,17 +148,9 @@ impl ProgressTracker {
         }
     }
 
-    pub fn with_arc_callback(mut self, callback: ProgressCallback) -> Self
+    pub fn with_callback(mut self, callback: ProgressCallback) -> Self
     {
         self.callback = Some(callback);
-        self
-    }
-
-    pub fn with_callback<F>(mut self, callback: F) -> Self
-    where
-        F: Fn(ProgressInfo) + Sync + Send + 'static,
-    {
-        self.callback = Some(Arc::new(callback));
         self
     }
 

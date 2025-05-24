@@ -243,12 +243,12 @@ impl TusClient {
         file.seek(SeekFrom::Start(offset)).await?;
 
         // 64KB
-        let reader_stream = ReaderStream::with_capacity(file, 64 * 1024);
+        let reader_stream = ReaderStream::with_capacity(file, 1024 * 1024);
 
         let body = if let Some(callback) = progress_callback {
             let tracker = Arc::new(
                 ProgressTracker::new(file_size, offset)
-                    .with_arc_callback(callback)
+                    .with_callback(callback)
                     .with_update_interval(Duration::from_millis(500))
             );
 
@@ -274,6 +274,7 @@ impl TusClient {
         let remaining_size = file_size - offset;
         let mut headers = TusClient::create_headers();
         headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
+        headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
         headers.insert("Content-Length", HeaderValue::from_str(&remaining_size.to_string())?);
         
         let response = self.client
@@ -331,12 +332,10 @@ impl TusClient {
 
                     println!(
                         "{:.2} MB/s{}",
-                        info.instant_speed / (1024.0 * 1024.0),
+                        info.instant_speed,
                         eta_str
                     );
                 });
-
-                println!("{}", &upload_url);
 
                 self.upload_file_streaming(&upload_url, &file_path, file_size, Some(callback)).await?;
             }
