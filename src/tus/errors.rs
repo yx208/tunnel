@@ -58,6 +58,9 @@ pub enum TusError {
     
     #[error("Internal error: {0}")]
     InternalError(String),
+    
+    #[error("serde json error: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
 }
 
 impl TusError {
@@ -81,6 +84,10 @@ impl TusError {
 
     pub fn operation_error(message: impl Into<String>) -> Self {
         Self::OperationError(message.into())
+    }
+
+    pub fn internal_error(message: impl Into<String>) -> Self {
+        Self::InternalError(message.into())
     }
 }
 

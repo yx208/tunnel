@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use futures_util::TryFutureExt;
 use tokio::sync::{oneshot, mpsc, RwLock};
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
@@ -166,12 +167,12 @@ impl UploadManager {
                 reply: reply_tx
             })
             .await
-            .map_err(|_| TusError::InternalError("Send command failed".to_string()))?;
+            .map_err(|_| TusError::internal_error("Manager shut down"))?;
 
         // 等待响应
         reply_rx
             .await
-            .map_err(|_| TusError::InternalError("Failed to add upload".to_string()))?
+            .map_err(|err| TusError::internal_error(err.to_string()))?
     }
 
     /// Pause upload task
@@ -184,12 +185,83 @@ impl UploadManager {
                 reply: reply_tx
             })
             .await
-            .map_err(|_| TusError::InternalError("Send command [PauseUpload] failed".to_string()))?;
-        
+            .map_err(|_| TusError::internal_error("Manager shut down"))?;
+
         reply_rx
             .await
-            .map_err(|_| TusError::InternalError("Failed to pause upload".to_string()))?;
-        
-        Ok(())
+            .map_err(|err| TusError::internal_error(err.to_string()))?
+    }
+
+    /// Resume upload
+    pub async fn resume_upload(&self, upload_id: UploadId) -> Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ManagerCommand::ResumeUpload {
+                upload_id,
+                reply: reply_tx
+            })
+            .await
+            .map_err(|_| TusError::internal_error("Manager shut down"))?;
+
+        reply_rx
+            .await
+            .map_err(|err| TusError::internal_error(err.to_string()))?
+    }
+
+    /// Cancel upload
+    pub async fn cancel_upload(&self, upload_id: UploadId) -> Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ManagerCommand::CancelUpload {
+                upload_id,
+                reply: reply_tx
+            })
+            .await
+            .map_err(|_| TusError::internal_error("Manager shut down"))?;
+
+        reply_rx
+            .await
+            .map_err(|err| TusError::internal_error(err.to_string()))?
+    }
+
+    /// Get task
+    pub async fn get_task(&self, upload_id: UploadId) -> Result<Option<UploadTask>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ManagerCommand::GetTask {
+                upload_id,
+                reply: reply_tx
+            })
+            .await
+            .map_err(|_| TusError::internal_error("Manager shut down"))?;
+
+        let task = reply_rx
+            .await
+            .map_err(|err| TusError::internal_error(err.to_string()))?;
+
+        Ok(task)
+    }
+
+    /// Get all task
+    pub async fn get_all_tasks(&self) -> Result<Vec<UploadTask>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ManagerCommand::GetAllTasks { reply: reply_tx })
+            .await
+            .map_err(|_| TusError::internal_error("Manager shut down"))?;
+
+        let tasks = reply_rx
+            .await
+            .map_err(|err| TusError::internal_error(err.to_string()))?;
+
+        Ok(tasks)
+    }
+    
+    pub async fn subscribe_events(&self) -> mpsc::UnboundedReceiver<UploadEvent> {
+        todo!("Implement proper event broadcasting")
     }
 }
