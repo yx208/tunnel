@@ -98,7 +98,7 @@ pub enum ManagerCommand {
     },
 
     /// 暂停
-    PausedUpload {
+    PauseUpload {
         upload_id: UploadId,
         reply: oneshot::Sender<Result<()>>,
     },
@@ -172,5 +172,24 @@ impl UploadManager {
         reply_rx
             .await
             .map_err(|_| TusError::InternalError("Failed to add upload".to_string()))?
+    }
+
+    /// Pause upload task
+    pub async fn pause_upload(&self, upload_id: UploadId) -> Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        
+        self.command_tx
+            .send(ManagerCommand::PauseUpload {
+                upload_id,
+                reply: reply_tx
+            })
+            .await
+            .map_err(|_| TusError::InternalError("Send command [PauseUpload] failed".to_string()))?;
+        
+        reply_rx
+            .await
+            .map_err(|_| TusError::InternalError("Failed to pause upload".to_string()))?;
+        
+        Ok(())
     }
 }
