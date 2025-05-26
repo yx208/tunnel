@@ -5,7 +5,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use crate::tus::worker::UploadWorker;
 use super::client::TusClient;
-use super::errors::Result;
+use super::errors::{Result, TusError};
 use super::manager::{ManagerCommand, UploadEvent, UploadId, UploadState, UploadTask};
 
 struct TaskHandle {
@@ -141,23 +141,136 @@ impl UploadManagerWorker {
     }
 
     async fn handle_command(&mut self, command: ManagerCommand) {
-
+        match command {
+            ManagerCommand::AddUpload { file_path, metadata, reply } => {
+                let result = self.add_upload(file_path, metadata).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::PauseUpload { upload_id, reply } => {
+                let result = self.pause_upload(upload_id).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::ResumeUpload { upload_id, reply } => {
+                let result = self.resume_upload(upload_id).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::CancelUpload { upload_id, reply } => {
+                let result = self.cancel_upload(upload_id).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::GetTask { upload_id, reply } => {
+                let task = self.tasks
+                    .get(&upload_id)
+                    .map(|handle| handle.task.clone());
+                let _ = reply.send(task);
+            }
+            ManagerCommand::GetAllTasks { reply } => {
+                let tasks: Vec<_> = self.tasks
+                    .values()
+                    .map(|handle| handle.task.clone())
+                    .collect();
+                let _ = reply.send(tasks);
+            }
+        }
     }
 
-    async fn add_upload(&mut self, upload_id: UploadId) {
+    async fn add_upload(&mut self, file_path: PathBuf, metadata: Option<HashMap<String, String>>) -> Result<UploadId> {
+        // Verify file
+        let file_metadata = tokio::fs::metadata(&file_path).await?;
+        if !file_metadata.is_file() {
+            return Err(TusError::ParamError("Not a file".to_string()));
+        }
 
+        let upload_id = UploadId::new();
+        let task = UploadTask {
+            id: upload_id,
+            file_path,
+            file_size: file_metadata.len(),
+            upload_url: None,
+            state: UploadState::Queued,
+            bytes_uploaded: 0,
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            completed_at: None,
+            error: None,
+            metadata,
+        };
+
+        self.tasks.insert(upload_id, TaskHandle {
+            task,
+            cancellation_token: None,
+            join_handle: None
+        });
+
+        self.queued_tasks.push(upload_id);
+        self.emit_state_change(upload_id, UploadState::Queued, UploadState::Queued);
+
+        Ok(upload_id)
     }
 
-    async fn pause_upload(&mut self, upload_id: UploadId) {
+    async fn pause_upload(&mut self, upload_id: UploadId) -> Result<()> {
+        let handle = self.tasks.get_mut(&upload_id)
+            .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
+        match handle.task.state {
+            UploadState::Queued => {
+                self.queued_tasks.retain(|id| *id != upload_id);
+                handle.task.state = UploadState::Paused;
+                self.emit_state_change(upload_id, UploadState::Queued, UploadState::Paused);
+
+                Ok(())
+            }
+            UploadState::Uploading => {
+                if let Some(token) = &handle.cancellation_token {
+                    token.cancel();
+                }
+
+                handle.task.state = UploadState::Paused;
+                self.emit_state_change(upload_id, UploadState::Uploading, UploadState::Paused);
+                self.active_uploads -= 1;
+
+                Ok(())
+            }
+            _ => Err(TusError::ParamError(format!("Cannot pause task in state {:?}", handle.task.state)))
+        }
     }
 
-    async fn resume_upload(&mut self, upload_id: UploadId) {
+    async fn resume_upload(&mut self, upload_id: UploadId) -> Result<()> {
+        let handle = self.tasks.get_mut(&upload_id)
+            .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
+        match handle.task.state {
+            UploadState::Paused => {
+                handle.task.state = UploadState::Queued;
+                self.queued_tasks.push(upload_id);
+                self.emit_state_change(upload_id, UploadState::Paused, UploadState::Queued);
+                Ok(())
+            }
+            _ => Err(TusError::ParamError(format!("Cannot resume task in state {:?}", handle.task.state)))
+        }
     }
 
-    async fn cancel_upload(&mut self, upload_id: UploadId) {
+    async fn cancel_upload(&mut self, upload_id: UploadId) -> Result<()> {
+        let handle = self.tasks.get_mut(&upload_id)
+            .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
+        // 取消正在进行的上传
+        if let Some(token) = &handle.cancellation_token {
+            token.cancel();
+        }
+
+        // 从队列中移除
+        self.queued_tasks.retain(|id| *id != upload_id);
+
+        let old_state = handle.task.state;
+        handle.task.state = UploadState::Cancelled;
+        self.emit_state_change(upload_id, old_state, UploadState::Cancelled);
+
+        if old_state == UploadState::Uploading {
+            self.active_uploads -= 1;
+        }
+
+        Ok(())
     }
 
     async fn check_completed_tasks(&mut self) {
