@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use anyhow::Context;
-use reqwest::header::HeaderValue;
+use reqwest::header::{HeaderValue, HeaderName};
 use reqwest::{Client, StatusCode};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
@@ -36,12 +38,14 @@ impl TusClient {
         }
     }
 
-    async fn create_upload(&self, file_size: u64, metadata: Option<Metadata>) -> Result<String> {
+    pub async fn create_upload(&self, file_size: u64, metadata: Option<HashMap<String, String>>) -> Result<String> {
         let mut headers = TusClient::create_headers();
         headers.insert("Upload-Length", file_size.to_string().parse()?);
 
         if let Some(meta) = metadata {
-            headers.insert("Upload-Metadata", meta.to_header().parse()?);
+            for (k, v) in meta {
+                headers.insert(HeaderName::from_str(&k)?, v.parse()?);
+            }
         }
 
         let response = self
@@ -76,7 +80,7 @@ impl TusClient {
         }
     }
 
-    async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
+    pub async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
         let headers = TusClient::create_headers();
 
         let response = self.client.head(upload_url).headers(headers).send().await?;
@@ -305,7 +309,7 @@ impl TusClient {
         Ok(())
     }
 
-    pub async fn upload_file(&self, file_path: &str, metadata: Option<Metadata>) -> Result<String> {
+    pub async fn upload_file(&self, file_path: &str, metadata: Option<HashMap<String, String>>) -> Result<String> {
         let path = Path::new(file_path);
         let mut file =
             File::open(path).with_context(|| format!("Failed to open file: {}", file_path))?;

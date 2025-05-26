@@ -36,6 +36,7 @@ impl Default for TusClientConfig {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TusClient {
     pub client: Client,
     pub endpoint: String,

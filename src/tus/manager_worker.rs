@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use crate::tus::worker::UploadWorker;
 use super::types::TusClient;
 use super::errors::Result;
-use super::upload_manager::{ManagerCommand, UploadEvent, UploadId, UploadState, UploadTask};
+use super::manager::{ManagerCommand, UploadEvent, UploadId, UploadState, UploadTask};
 
 struct TaskHandle {
     task: UploadTask,
@@ -24,11 +25,11 @@ pub struct UploadManagerWorker {
 }
 
 impl UploadManagerWorker {
-    pub async fn run(
+    pub(crate) async fn run(
         client: TusClient,
         max_concurrent: usize,
         state_file: Option<PathBuf>,
-        command_rx: mpsc::Receiver<ManagerCommand>,
+        mut command_rx: mpsc::Receiver<ManagerCommand>,
         event_tx: mpsc::UnboundedSender<UploadEvent>
     ) {
         let mut worker = Self {
@@ -40,12 +41,178 @@ impl UploadManagerWorker {
             event_tx,
             state_file,
         };
-        
+
+        // 恢复之前的状态
         if let Err(err) = worker.restore_state().await {
-            
+            eprintln!("Failed to restore state: {}", err);
+        }
+
+        // 主事件循环, 循环等待命令
+        loop {
+            tokio::select! {
+                Some(command) = command_rx.recv() => {
+                    worker.handle_command(command).await;
+                }
+                _ = worker.check_completed_tasks() => {
+
+                }
+                else => break
+            }
+
+            // 尝试启动队列中的任务
+            worker.process_queue().await;
+
+            // 保存状态
+            if let Err(err) = worker.save_state().await {
+                eprintln!("Failed to save state: {}", err);
+            }
         }
     }
-    
+
+    async fn process_queue(&mut self) {
+        while self.active_uploads < self.max_concurrent && !self.queued_tasks.is_empty() {
+            let upload_id = self.queued_tasks.remove(0);
+
+            if let Some(handle) = self.tasks.get_mut(&upload_id) {
+                if handle.task.state == UploadState::Queued {
+                    self.start_upload(upload_id).await;
+                }
+            }
+        }
+    }
+
+    async fn start_upload(&mut self, upload_id: UploadId) {
+        // 拿到任务的 handle 做上传
+        let handle = match self.tasks.get_mut(&upload_id) {
+            Some(h) => h,
+            None => return
+        };
+
+        // 创建上传URL（如果还没有）
+        if handle.task.upload_url.is_none() {
+            match self.client.create_upload(handle.task.file_size, handle.task.metadata.clone()).await {
+                Ok(upload_url) => {
+                    handle.task.upload_url = Some(upload_url);
+                }
+                Err(err) => {
+                    handle.task.state = UploadState::Failed;
+                    handle.task.error = Some(err.to_string());
+                    self.emit_state_change(upload_id, UploadState::Queued, UploadState::Failed);
+                    return;
+                }
+            }
+        }
+
+        // 创建 Cancellation_token
+        let cancellation_token = CancellationToken::new();
+        handle.cancellation_token = Some(cancellation_token.clone());
+
+        // Startup
+        let worker = UploadWorker {
+            cancellation_token,
+            client: self.client.clone()
+        };
+
+        let task = handle.task.clone();
+        let event_tx = self.event_tx.clone();
+        let (progress_tx, progress_rx) = mpsc::unbounded_channel::<UploadEvent>();
+        let (state_tx, state_rx) = mpsc::channel::<UploadState>(16);
+        
+        
+    }
+
+    async fn handle_command(&mut self, command: ManagerCommand) {
+
+    }
+
+    async fn add_upload(&mut self, upload_id: UploadId) {
+
+    }
+
+    async fn pause_upload(&mut self, upload_id: UploadId) {
+
+    }
+
+    async fn resume_upload(&mut self, upload_id: UploadId) {
+
+    }
+
+    async fn cancel_upload(&mut self, upload_id: UploadId) {
+
+    }
+
+    async fn check_completed_tasks(&mut self) {
+        let mut completed = Vec::new();
+
+        // 获取所有已完成的任务
+        for (upload_id, handle) in self.tasks.iter_mut() {
+            if let Some(join_handle) = handle.join_handle.as_mut() {
+                if join_handle.is_finished() {
+                    completed.push(*upload_id);
+                }
+            }
+        }
+
+        for upload_id in completed {
+            self.handle_task_completion(upload_id).await;
+        }
+    }
+
+    async fn handle_task_completion(&mut self, upload_id: UploadId) {
+        let handle = match self.tasks.get_mut(&upload_id) {
+            Some(handle) => handle,
+            None => return
+        };
+
+        if let Some(join_handle) = handle.join_handle.take() {
+            let old_state = handle.task.state;
+            match join_handle.await {
+                Ok(Ok(upload_url)) => {
+                    handle.task.state = UploadState::Completed;
+                    handle.task.completed_at = Some(chrono::Utc::now());
+                    self.emit_state_change(upload_id, old_state, UploadState::Completed);
+                    let _ = self.event_tx.send(UploadEvent::Completed { upload_id, upload_url });
+                }
+                Ok(Err(err)) => {
+                    handle.task.state = UploadState::Failed;
+                    handle.task.error = Some(err.to_string());
+                    self.emit_state_change(upload_id, old_state, UploadState::Failed);
+                    let _ = self.event_tx.send(UploadEvent::Failed {
+                        upload_id,
+                        error: err.to_string()
+                    });
+                }
+                Err(err) => {
+                    handle.task.state = UploadState::Failed;
+                    handle.task.error = Some(format!("Task panicked: {}", err));
+                    self.emit_state_change(upload_id, old_state, UploadState::Failed);
+                }
+            }
+
+            self.active_uploads -= 1;
+        }
+    }
+
+    fn emit_state_change(&self, upload_id: UploadId, old_state: UploadState, new_state: UploadState) {
+        let _ = self.event_tx.send(UploadEvent::StateChanged {
+            upload_id,
+            old_state,
+            new_state
+        });
+    }
+
+    /// Save tasks state
+    async fn save_state(&self) -> Result<()> {
+        if let Some(state_file) = &self.state_file {
+            let tasks: Vec<_> = self.tasks.values().map(|h| &h.task).collect();
+            let data = serde_json::to_string_pretty(&tasks)?;
+            tokio::fs::write(state_file, data).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Restore tasks from the machine
     async fn restore_state(&mut self) -> Result<()> {
         if let Some(path) = &self.state_file {
             if path.exists() {

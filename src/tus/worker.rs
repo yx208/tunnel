@@ -5,11 +5,11 @@ use tokio::sync::{mpsc};
 use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo};
 use super::types::TusClient;
-use super::upload_manager::{UploadId, UploadProgress, UploadState, UploadTask};
+use super::manager::{UploadId, UploadProgress, UploadState, UploadTask};
 
-struct UploadWorker {
-    client: TusClient,
-    cancellation_token: CancellationToken
+pub struct UploadWorker {
+    pub(crate) client: TusClient,
+    pub(crate) cancellation_token: CancellationToken
 }
 
 impl UploadWorker {
