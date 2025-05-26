@@ -1,8 +1,8 @@
 pub mod client;
-pub mod constants;
+mod constants;
 pub mod errors;
 pub mod metadata;
-mod progress;
-mod manager;
+pub mod progress;
+pub mod manager;
 mod worker;
 mod manager_worker;
