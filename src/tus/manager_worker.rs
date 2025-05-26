@@ -21,8 +21,11 @@ pub struct UploadManagerWorker {
     tasks: HashMap<UploadId, TaskHandle>,
     queued_tasks: Vec<UploadId>,
     active_uploads: usize,
-    event_tx: mpsc::UnboundedSender<UploadEvent>,
     state_file: Option<PathBuf>,
+
+    event_tx: mpsc::UnboundedSender<UploadEvent>,
+    task_completion_rx: mpsc::UnboundedReceiver<UploadId>,
+    task_completion_tx: mpsc::UnboundedSender<UploadId>,
 }
 
 impl UploadManagerWorker {
@@ -33,14 +36,17 @@ impl UploadManagerWorker {
         mut command_rx: mpsc::Receiver<ManagerCommand>,
         event_tx: mpsc::UnboundedSender<UploadEvent>
     ) {
+        let (task_completion_tx, task_completion_rx) = mpsc::unbounded_channel();
         let mut worker = Self {
             client,
             max_concurrent,
             tasks: HashMap::new(),
             queued_tasks: Vec::new(),
             active_uploads: 0,
-            event_tx,
             state_file,
+            event_tx,
+            task_completion_tx,
+            task_completion_rx,
         };
 
         // 恢复之前的状态
@@ -54,13 +60,12 @@ impl UploadManagerWorker {
                 Some(command) = command_rx.recv() => {
                     worker.handle_command(command).await;
                 }
-                _ = worker.check_completed_tasks() => {
-
+                Some(upload_id) = worker.task_completion_rx.recv() => {
+                    worker.handle_task_completion(upload_id).await;
                 }
                 else => break
             }
 
-            // 尝试启动队列中的任务
             worker.process_queue().await;
 
             // 保存状态
@@ -127,9 +132,14 @@ impl UploadManagerWorker {
             }
         });
 
+        let completion_tx = self.task_completion_tx.clone();
         let join_handle = tokio::spawn(async move {
             let result = worker.run(task, progress_tx, state_tx).await;
             drop(progress_forward);
+
+            // 通知完成
+            let _ = completion_tx.send(upload_id);
+            
             result
         });
 
