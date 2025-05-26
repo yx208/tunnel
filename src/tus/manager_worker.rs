@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use crate::tus::worker::UploadWorker;
+use super::task::UploadTask;
+use super::worker::UploadWorker;
 use super::client::TusClient;
 use super::errors::{Result, TusError};
-use super::manager::{ManagerCommand, UploadEvent, UploadId, UploadState, UploadTask};
+use super::types::{ManagerCommand, UploadEvent, UploadId, UploadState};
 
 struct TaskHandle {
     task: UploadTask,

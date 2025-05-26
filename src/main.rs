@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use tunnel::config::get_config;
 use tunnel::tus::client::{TusClient, UploadStrategy};
 use tunnel::tus::errors::Result;
-use tunnel::tus::manager::{UploadEvent, UploadManager};
+use tunnel::tus::manager::UploadManager;
+use tunnel::tus::types::UploadEvent;
 
 #[tokio::main]
 async fn main() -> Result<()> {

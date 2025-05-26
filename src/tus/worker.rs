@@ -2,10 +2,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tokio::sync::{mpsc};
+use super::task::UploadTask;
 use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo};
 use super::client::TusClient;
-use super::manager::{UploadId, UploadProgress, UploadState, UploadTask};
+use super::types::{UploadId, UploadProgress, UploadState};
 
 pub struct UploadWorker {
     pub(crate) client: TusClient,

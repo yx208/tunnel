@@ -1,132 +1,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use futures_util::TryFutureExt;
 use tokio::sync::{oneshot, mpsc, RwLock};
-use uuid::Uuid;
-use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
-use crate::tus::manager_worker::UploadManagerWorker;
+use super::task::UploadTask;
+use super::manager_worker::UploadManagerWorker;
+use super::types::{ManagerCommand, UploadEvent, UploadId};
 use super::errors::{Result, TusError};
 use super::client::TusClient;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub struct UploadId(Uuid);
-
-impl UploadId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum UploadState {
-    /// 等待中（在队列中）
-    Queued,
-    /// 准备中（创建上传会话）
-    Preparing,
-    /// 上传中
-    Uploading,
-    /// 已暂停
-    Paused,
-    /// 已完成
-    Completed,
-    /// 失败
-    Failed,
-    /// 已取消
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct UploadTask {
-    pub id: UploadId,
-    pub file_path: PathBuf,
-    pub file_size: u64,
-    pub upload_url: Option<String>,
-    pub state: UploadState,
-    pub bytes_uploaded: u64,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub error: Option<String>,
-    pub metadata: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct UploadProgress {
-    pub upload_id: UploadId,
-    pub bytes_uploaded: u64,
-    pub total_bytes: u64,
-    pub instant_speed: f64,
-    pub average_speed: f64,
-    pub percentage: f64,
-    pub eta: Option<Duration>,
-}
-
-#[derive(Debug, Clone)]
-pub enum UploadEvent {
-    /// 任务状态变更
-    StateChanged {
-        upload_id: UploadId,
-        old_state: UploadState,
-        new_state: UploadState,
-    },
-
-    /// 进度更新
-    Progress(UploadProgress),
-
-    /// 任务失败
-    Failed {
-        upload_id: UploadId,
-        error: String,
-    },
-
-    /// 任务完成
-    Completed {
-        upload_id: UploadId,
-        upload_url: String,
-    },
-}
-
-/// 上传管理器命令
-pub enum ManagerCommand {
-    /// 添加上传任务
-    AddUpload {
-        file_path: PathBuf,
-        metadata: Option<HashMap<String, String>>,
-        reply: oneshot::Sender<Result<UploadId>>,
-    },
-
-    /// 暂停
-    PauseUpload {
-        upload_id: UploadId,
-        reply: oneshot::Sender<Result<()>>,
-    },
-
-    /// 恢复
-    ResumeUpload {
-        upload_id: UploadId,
-        reply: oneshot::Sender<Result<()>>,
-    },
-
-    /// 取消
-    CancelUpload {
-        upload_id: UploadId,
-        reply: oneshot::Sender<Result<()>>,
-    },
-
-    /// 获取任务信息
-    GetTask {
-        upload_id: UploadId,
-        reply: oneshot::Sender<Option<UploadTask>>,
-    },
-
-    /// 获取所有任务
-    GetAllTasks {
-        reply: oneshot::Sender<Vec<UploadTask>>,
-    }
-}
 
 pub struct UploadManager {
     command_tx: mpsc::Sender<ManagerCommand>,

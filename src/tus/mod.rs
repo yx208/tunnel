@@ -6,3 +6,5 @@ pub mod progress;
 pub mod manager;
 mod worker;
 mod manager_worker;
+mod task;
+pub mod types;
