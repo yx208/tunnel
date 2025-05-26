@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use crate::tus::worker::UploadWorker;
-use super::types::TusClient;
+use super::client::TusClient;
 use super::errors::Result;
 use super::manager::{ManagerCommand, UploadEvent, UploadId, UploadState, UploadTask};
 
@@ -107,7 +107,6 @@ impl UploadManagerWorker {
         let cancellation_token = CancellationToken::new();
         handle.cancellation_token = Some(cancellation_token.clone());
 
-        // Startup
         let worker = UploadWorker {
             cancellation_token,
             client: self.client.clone()
@@ -115,10 +114,30 @@ impl UploadManagerWorker {
 
         let task = handle.task.clone();
         let event_tx = self.event_tx.clone();
-        let (progress_tx, progress_rx) = mpsc::unbounded_channel::<UploadEvent>();
-        let (state_tx, state_rx) = mpsc::channel::<UploadState>(16);
-        
-        
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        let (state_tx, mut state_rx) = mpsc::channel(16);
+
+        let progress_forward = tokio::spawn({
+            let event_tx = event_tx.clone();
+            async move {
+                while let Some(progress) = progress_rx.recv().await {
+                    let _ = event_tx.send(UploadEvent::Progress(progress));
+                }
+            }
+        });
+
+        let join_handle = tokio::spawn(async move {
+            let result = worker.run(task, progress_tx, state_tx).await;
+            drop(progress_forward);
+            result
+        });
+
+        handle.join_handle = Some(join_handle);
+        handle.task.state = UploadState::Uploading;
+        handle.task.started_at = Some(chrono::Utc::now());
+
+        self.active_uploads += 1;
+        self.emit_state_change(upload_id, UploadState::Queued, UploadState::Uploading);
     }
 
     async fn handle_command(&mut self, command: ManagerCommand) {

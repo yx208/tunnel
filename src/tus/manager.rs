@@ -8,8 +8,8 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use crate::tus::manager_worker::UploadManagerWorker;
-use crate::tus::types::TusClient;
 use super::errors::{Result, TusError};
+use super::client::TusClient;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct UploadId(Uuid);

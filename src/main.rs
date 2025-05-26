@@ -1,5 +1,7 @@
+#![allow(warnings, warnings)]
+
 use tunnel::config::get_config;
-use tunnel::tus::types::{TusClient, UploadStrategy};
+use tunnel::tus::client::{TusClient, UploadStrategy};
 use tunnel::tus::errors::Result;
 
 #[tokio::main]

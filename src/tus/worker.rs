@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tokio::sync::{mpsc};
 use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo};
-use super::types::TusClient;
+use super::client::TusClient;
 use super::manager::{UploadId, UploadProgress, UploadState, UploadTask};
 
 pub struct UploadWorker {
@@ -13,7 +13,7 @@ pub struct UploadWorker {
 }
 
 impl UploadWorker {
-    async fn run(
+    pub async fn run(
         self,
         task: UploadTask,
         progress_tx: mpsc::UnboundedSender<UploadProgress>,
