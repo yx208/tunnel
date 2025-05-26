@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
         UploadStrategy::Streaming
     );
 
-    let manager = UploadManager::new(
+    let mut manager = UploadManager::new(
         client,
         3,
         Some("upload_state.json".into())
@@ -26,8 +26,7 @@ async fn main() -> Result<()> {
     let id = manager.add_upload(file_path, None).await?;
 
     let join_handle = tokio::spawn(async move {
-        let mut events = manager.subscribe_events().await;
-        while let Some(event) = events.recv().await {
+        while let Some(event) = manager.event_rx.recv().await {
             match event {
                 UploadEvent::Progress(progress) => {
                     println!(

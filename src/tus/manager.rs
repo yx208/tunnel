@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use futures_util::TryFutureExt;
-use tokio::sync::{oneshot, mpsc, RwLock};
+use tokio::sync::{oneshot, mpsc};
 use tokio::task::JoinHandle;
 use super::task::UploadTask;
 use super::manager_worker::UploadManagerWorker;
@@ -11,8 +11,8 @@ use super::errors::{Result, TusError};
 use super::client::TusClient;
 
 pub struct UploadManager {
+    pub event_rx: mpsc::UnboundedReceiver<UploadEvent>,
     command_tx: mpsc::Sender<ManagerCommand>,
-    event_rx: Arc<RwLock<mpsc::UnboundedReceiver<UploadEvent>>>,
     worker_handle: JoinHandle<()>,
 }
 
@@ -31,7 +31,7 @@ impl UploadManager {
 
         Self {
             command_tx,
-            event_rx: Arc::new(RwLock::new(event_rx)),
+            event_rx,
             worker_handle,
         }
     }
@@ -143,7 +143,7 @@ impl UploadManager {
         Ok(tasks)
     }
     
-    pub async fn subscribe_events(&self) -> mpsc::UnboundedReceiver<UploadEvent> {
-        todo!("Implement proper event broadcasting")
+    pub async fn subscribe_events(&self) -> Arc<mpsc::UnboundedReceiver<UploadEvent>> {
+        todo!("")
     }
 }
