@@ -29,7 +29,6 @@ pub struct ProgressInfo {
 
 pub type ProgressCallback = Arc<dyn Fn(ProgressInfo) + Sync + Send>;
 
-/// 速度计算器 - 使用环形缓冲区
 struct SpeedCalculator {
     /// 采样的时间跟字节
     samples: Vec<(Instant, u64)>,
@@ -107,7 +106,7 @@ impl SpeedCalculator {
             .as_secs_f64();
 
         if duration > 0.0 {
-            total_bytes as f64 / duration
+            (total_bytes as usize / recent_samples.len()) as f64 / duration
         } else {
             0.0
         }
@@ -126,12 +125,28 @@ impl SpeedCalculator {
 
 /// 进度追踪器
 pub struct ProgressTracker {
+    /// 总大小
     total_bytes: u64,
+
+    /// 初始大小，续传可能会有
     initial_offset: u64,
+
+    /// 已传输字节
     bytes_transferred: Arc<Mutex<u64>>,
+
+    /// 计算器
     speed_calc: Arc<Mutex<SpeedCalculator>>,
+
+    /// 最后更新的时间，由 update_interval 相关
     last_update: Arc<Mutex<Instant>>,
+
+    /// 自最后更新依赖记录的字节
+    bytes_since_last_update: Arc<Mutex<u64>>,
+
+    /// 更新的间隔
     update_interval: Duration,
+
+    /// 回调
     pub callback: Option<ProgressCallback>,
 }
 
@@ -141,9 +156,10 @@ impl ProgressTracker {
             total_bytes,
             initial_offset,
             bytes_transferred: Arc::new(Mutex::new(0)),
-            speed_calc: Arc::new(Mutex::new(SpeedCalculator::new(20))),
+            speed_calc: Arc::new(Mutex::new(SpeedCalculator::new(10))),
             last_update: Arc::new(Mutex::new(Instant::now())),
             callback: None,
+            bytes_since_last_update: Arc::new(Mutex::new(0)),
             update_interval: Duration::from_secs(1),
         }
     }
@@ -163,9 +179,13 @@ impl ProgressTracker {
     fn record_bytes(&self, bytes: u64) {
         let mut bytes_transferred = self.bytes_transferred.lock();
         *bytes_transferred += bytes;
-
         let total_transferred = *bytes_transferred;
         drop(bytes_transferred);
+
+        let mut bytes_since_update = self.bytes_since_last_update.lock();
+        *bytes_since_update += bytes;
+        let bytes_since_last = *bytes_since_update;
+        drop(bytes_since_update);
 
         let now = Instant::now();
 
@@ -182,7 +202,7 @@ impl ProgressTracker {
 
         // 双重检查（避免竞态条件）
         if now.duration_since(*last_update) >= self.update_interval {
-            speed_calc.add_sample(bytes);
+            speed_calc.add_sample(bytes_since_last);
 
             let actual_uploaded = self.initial_offset + total_transferred;
             let percentage = (actual_uploaded as f64 / self.total_bytes as f64) * 100.0;
@@ -213,6 +233,8 @@ impl ProgressTracker {
                 callback(info);
             }
 
+            let mut bytes_since_update = self.bytes_since_last_update.lock();
+            *bytes_since_update = 0;
             *last_update = now;
         }
     }

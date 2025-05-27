@@ -330,14 +330,13 @@ impl TusClient {
         let mut file = file.try_clone().await?;
         file.seek(SeekFrom::Start(offset)).await?;
 
-        // 64KB
-        let reader_stream = ReaderStream::with_capacity(file, 1024 * 1024);
+        let reader_stream = ReaderStream::with_capacity(file, 1024 * 1024 * 10);
 
         let body = if let Some(callback) = progress_callback {
             let tracker = Arc::new(
                 ProgressTracker::new(file_size, offset)
                     .with_callback(callback)
-                    .with_update_interval(Duration::from_millis(500))
+                    .with_update_interval(Duration::from_secs(1))
             );
 
             // 立即发送初始进度

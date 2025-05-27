@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tokio::sync::{mpsc};
+use tokio::sync::mpsc;
 use super::task::UploadTask;
 use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo};
 use super::client::TusClient;
-use super::types::{UploadId, UploadProgress, UploadState};
+use super::types::UploadProgress;
 
 pub struct UploadWorker {
     pub(crate) client: TusClient,
@@ -21,7 +21,7 @@ impl UploadWorker {
     ) -> Result<String> {
         let file_size = task.file_size;
         let upload_url = task.upload_url.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Upload URL not set")
+            TusError::ParamError("Upload URL not set".to_string())
         })?;
 
         // 创建进度回调
@@ -37,7 +37,7 @@ impl UploadWorker {
                 eta: info.eta,
             });
         });
-        
+
         let future = self.client
             .upload_file_streaming(
                 upload_url,
