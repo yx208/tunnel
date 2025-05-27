@@ -306,7 +306,7 @@ impl TusClient {
         file_path: &str,
         file_size: u64,
         progress_callback: Option<ProgressCallback>
-    ) -> Result<()> {
+    ) -> Result<String> {
         let offset = self.get_upload_offset(upload_url).await?;
 
         if offset > file_size {
@@ -321,7 +321,7 @@ impl TusClient {
                 });
             }
 
-            return Ok(());
+            return Ok(upload_url.to_string());
         }
 
         let file = TokioFile::open(file_path).await
@@ -390,7 +390,7 @@ impl TusClient {
             });
         }
 
-        Ok(())
+        Ok(upload_url.to_string())
     }
 
     pub async fn upload_file(&self, file_path: &str, metadata: Option<HashMap<String, String>>) -> Result<String> {

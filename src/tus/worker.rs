@@ -38,10 +38,18 @@ impl UploadWorker {
                 eta: info.eta,
             });
         });
+        
+        let future = self.client
+            .upload_file_streaming(
+                upload_url,
+                &task.file_path.to_str().unwrap(),
+                file_size,
+                Some(progress_callback)
+            );
 
         // 执行
         tokio::select! {
-            result = self.upload_with_progress(upload_url, &task.file_path, file_size, progress_callback) => {
+            result = future => {
                 result
             },
             _ = self.cancellation_token.cancelled() => {
