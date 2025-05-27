@@ -92,4 +92,4 @@ impl TusError {
 }
 
 /// Error alias
-pub type Result<T> = std::result::Result<T, TusError>;
+pub type Result<T, E = TusError> = std::result::Result<T, E>;

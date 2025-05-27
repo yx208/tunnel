@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use futures_util::TryFutureExt;
-use tokio::sync::{oneshot, mpsc};
+use tokio::sync::{oneshot, mpsc, broadcast};
 use tokio::task::JoinHandle;
 use super::task::UploadTask;
 use super::manager_worker::UploadManagerWorker;
@@ -10,28 +9,47 @@ use super::types::{ManagerCommand, UploadEvent, UploadId};
 use super::errors::{Result, TusError};
 use super::client::TusClient;
 
+#[derive(Clone)]
 pub struct UploadManager {
-    pub event_rx: mpsc::UnboundedReceiver<UploadEvent>,
     command_tx: mpsc::Sender<ManagerCommand>,
-    worker_handle: JoinHandle<()>,
+    event_tx: broadcast::Sender<UploadEvent>,
+}
+
+/// 上传管理器句柄 - 包含管理器和工作线程
+pub struct UploadManagerHandle {
+    pub manager: UploadManager,
+    pub worker_handle: JoinHandle<()>,
+}
+
+impl UploadManagerHandle {
+    pub async fn shutdown(self) -> Result<()> {
+        drop(self.manager);
+        self.worker_handle.await
+            .map_err(|err| TusError::InternalError(format!("Worker panic: {}", err)))
+    }
 }
 
 impl UploadManager {
-    pub fn new(client: TusClient, concurrent: usize, state_file: Option<PathBuf>) -> Self {
+    pub fn new(client: TusClient, concurrent: usize, state_file: Option<PathBuf>) -> UploadManagerHandle {
         let (command_tx, command_rx) = mpsc::channel(100);
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        // 最大缓存 256 个事件
+        let (event_tx, _) = broadcast::channel(256);
 
         let worker_handle = tokio::spawn(UploadManagerWorker::run(
             client,
             concurrent,
             state_file,
             command_rx,
-            event_tx
+            event_tx.clone()
         ));
 
-        Self {
+        let manager = Self {
             command_tx,
-            event_rx,
+            event_tx,
+        };
+
+        UploadManagerHandle {
+            manager,
             worker_handle,
         }
     }
@@ -142,8 +160,41 @@ impl UploadManager {
 
         Ok(tasks)
     }
-    
-    pub async fn subscribe_events(&self) -> Arc<mpsc::UnboundedReceiver<UploadEvent>> {
-        todo!("")
+
+    /// 订阅事件
+    ///
+    /// 注意：
+    /// - 如果接收速度跟不上发送速度，可能会丢失事件（lagged error）
+    /// - 每个订阅者都会收到完整的事件副本
+    /// - 订阅者应该尽快处理事件，避免阻塞
+    pub fn subscribe_events(&self) -> broadcast::Receiver<UploadEvent> {
+        self.event_tx.subscribe()
+    }
+
+    pub fn subscribe_filtered<F>(&self, filter: F) -> FilteredEventReceiver<F> {
+        FilteredEventReceiver {
+            receiver: self.event_tx.subscribe(),
+            filter
+        }
+    }
+}
+
+/// 过滤的事件接收器
+pub struct FilteredEventReceiver<F> {
+    receiver: broadcast::Receiver<UploadEvent>,
+    filter: F,
+}
+
+impl<F> FilteredEventReceiver<F>
+where
+    F: Fn(&UploadEvent) -> bool,
+{
+    pub async fn recv(&mut self) -> Result<UploadEvent, broadcast::error::RecvError> {
+        loop {
+            let event = self.receiver.recv().await?;
+            if (self.filter)(&event) {
+                return Ok(event);
+            }
+        }
     }
 }

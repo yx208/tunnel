@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tunnel::config::get_config;
 use tunnel::tus::client::{TusClient, UploadStrategy};
 use tunnel::tus::errors::Result;
-use tunnel::tus::manager::UploadManager;
+use tunnel::tus::manager::{UploadManager};
 use tunnel::tus::types::UploadEvent;
 
 #[tokio::main]
@@ -16,17 +16,18 @@ async fn main() -> Result<()> {
         UploadStrategy::Streaming
     );
 
-    let mut manager = UploadManager::new(
+    let manager_handle = UploadManager::new(
         client,
         3,
         Some("upload_state.json".into())
     );
 
     let file_path = PathBuf::from(&config.file_path);
-    let id = manager.add_upload(file_path, None).await?;
+    manager_handle.manager.add_upload(file_path, None).await?;
 
     let join_handle = tokio::spawn(async move {
-        while let Some(event) = manager.event_rx.recv().await {
+        let mut events = manager_handle.manager.subscribe_events();
+        while let Ok(event) = events.recv().await {
             match event {
                 UploadEvent::Progress(progress) => {
                     println!(

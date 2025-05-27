@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use super::task::UploadTask;
@@ -23,7 +23,7 @@ pub struct UploadManagerWorker {
     active_uploads: usize,
     state_file: Option<PathBuf>,
 
-    event_tx: mpsc::UnboundedSender<UploadEvent>,
+    event_tx: broadcast::Sender<UploadEvent>,
     task_completion_rx: mpsc::UnboundedReceiver<UploadId>,
     task_completion_tx: mpsc::UnboundedSender<UploadId>,
 }
@@ -34,7 +34,7 @@ impl UploadManagerWorker {
         max_concurrent: usize,
         state_file: Option<PathBuf>,
         mut command_rx: mpsc::Receiver<ManagerCommand>,
-        event_tx: mpsc::UnboundedSender<UploadEvent>
+        event_tx: broadcast::Sender<UploadEvent>
     ) {
         let (task_completion_tx, task_completion_rx) = mpsc::unbounded_channel();
         let mut worker = Self {
