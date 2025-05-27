@@ -121,7 +121,6 @@ impl UploadManagerWorker {
         let task = handle.task.clone();
         let event_tx = self.event_tx.clone();
         let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
-        let (state_tx, mut state_rx) = mpsc::channel(16);
 
         let progress_forward = tokio::spawn({
             let event_tx = event_tx.clone();
@@ -134,7 +133,7 @@ impl UploadManagerWorker {
 
         let completion_tx = self.task_completion_tx.clone();
         let join_handle = tokio::spawn(async move {
-            let result = worker.run(task, progress_tx, state_tx).await;
+            let result = worker.run(task, progress_tx).await;
             drop(progress_forward);
 
             // 通知完成

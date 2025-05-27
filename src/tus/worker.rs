@@ -17,8 +17,7 @@ impl UploadWorker {
     pub async fn run(
         self,
         task: UploadTask,
-        progress_tx: mpsc::UnboundedSender<UploadProgress>,
-        state_tx: mpsc::Sender<(UploadId, UploadState)>
+        progress_tx: mpsc::UnboundedSender<UploadProgress>
     ) -> Result<String> {
         let file_size = task.file_size;
         let upload_url = task.upload_url.as_ref().ok_or_else(|| {
