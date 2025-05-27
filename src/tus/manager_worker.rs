@@ -118,7 +118,6 @@ impl UploadManagerWorker {
             client: self.client.clone()
         };
 
-        let task = handle.task.clone();
         let event_tx = self.event_tx.clone();
         let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
 
@@ -131,6 +130,7 @@ impl UploadManagerWorker {
             }
         });
 
+        let task = handle.task.clone();
         let completion_tx = self.task_completion_tx.clone();
         let join_handle = tokio::spawn(async move {
             let result = worker.run(task, progress_tx).await;
@@ -283,23 +283,6 @@ impl UploadManagerWorker {
         Ok(())
     }
 
-    async fn check_completed_tasks(&mut self) {
-        let mut completed = Vec::new();
-
-        // 获取所有已完成的任务
-        for (upload_id, handle) in self.tasks.iter_mut() {
-            if let Some(join_handle) = handle.join_handle.as_mut() {
-                if join_handle.is_finished() {
-                    completed.push(*upload_id);
-                }
-            }
-        }
-
-        for upload_id in completed {
-            self.handle_task_completion(upload_id).await;
-        }
-    }
-
     async fn handle_task_completion(&mut self, upload_id: UploadId) {
         let handle = match self.tasks.get_mut(&upload_id) {
             Some(handle) => handle,
@@ -308,6 +291,9 @@ impl UploadManagerWorker {
 
         if let Some(join_handle) = handle.join_handle.take() {
             let old_state = handle.task.state;
+
+            println!("{:?}", old_state);
+
             match join_handle.await {
                 Ok(Ok(upload_url)) => {
                     handle.task.state = UploadState::Completed;
@@ -331,7 +317,11 @@ impl UploadManagerWorker {
                 }
             }
 
-            self.active_uploads -= 1;
+            // 只有从 Uploading 状态结束的任务才需要减少计数
+            // 如果任务已经是 Cancelled/Paused，说明计数已经在对应的方法中处理过了
+            if old_state == UploadState::Uploading {
+                self.active_uploads -= 1;
+            }
         }
     }
 

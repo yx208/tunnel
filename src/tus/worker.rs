@@ -1,10 +1,9 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tokio::sync::mpsc;
 use super::task::UploadTask;
 use super::errors::{Result, TusError};
-use super::progress::{ProgressCallback, ProgressInfo};
+use super::progress::{ProgressInfo};
 use super::client::TusClient;
 use super::types::UploadProgress;
 
@@ -56,23 +55,5 @@ impl UploadWorker {
             }
         }
     }
-
-    async fn upload_with_progress(
-        &self,
-        upload_url: &str,
-        file_path: &PathBuf,
-        file_size: u64,
-        progress_callback: ProgressCallback
-    ) -> Result<String> {
-        self.client.upload_file_streaming(
-            upload_url,
-            file_path.to_str().unwrap(),
-            file_size,
-            Some(progress_callback),
-        ).await?;
-
-        Ok(upload_url.to_string())
-    }
-
 }
 

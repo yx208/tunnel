@@ -330,7 +330,7 @@ impl TusClient {
         let mut file = file.try_clone().await?;
         file.seek(SeekFrom::Start(offset)).await?;
 
-        let reader_stream = ReaderStream::with_capacity(file, 1024 * 1024 * 10);
+        let reader_stream = ReaderStream::with_capacity(file, self.chunk_size);
 
         let body = if let Some(callback) = progress_callback {
             let tracker = Arc::new(
