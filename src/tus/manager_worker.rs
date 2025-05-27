@@ -272,15 +272,80 @@ impl UploadManagerWorker {
         // 从队列中移除
         self.queued_tasks.retain(|id| *id != upload_id);
 
-        let old_state = handle.task.state;
-        handle.task.state = UploadState::Cancelled;
-        self.emit_state_change(upload_id, old_state, UploadState::Cancelled);
-
-        if old_state == UploadState::Uploading {
-            self.active_uploads -= 1;
-        }
+        self.transition_state(&mut handle, UploadState::Cancelled)?;
 
         Ok(())
+    }
+
+    /// 统一的状态转换方法 - 所有状态改变都必须通过这里
+    fn transition_state(&mut self, handle: &mut TaskHandle, new_state: UploadState) -> Result<()> {
+        let old_state = handle.task.state;
+
+        // 状态相同，无需处理
+        if old_state == new_state {
+            return Ok(());
+        }
+
+        // 验证状态转换是否合法
+        if !Self::is_valid_transition(old_state, new_state) {
+            return Err(TusError::ParamError(
+                format!("Invalid state transition: {:?} -> {:?}", old_state, new_state)
+            ));
+        }
+
+        // 更新状态
+        handle.task.state = new_state;
+
+        // 统一管理活跃计数
+        match (old_state, new_state) {
+            // 开始上传
+            (_, UploadState::Uploading) => {
+                self.active_uploads += 1;
+                handle.task.started_at = Some(chrono::Utc::now());
+            }
+            // 结束上传（无论什么原因）
+            (UploadState::Uploading, _) => {
+                self.active_uploads -= 1;
+                match new_state {
+                    UploadState::Completed => {
+                        handle.task.completed_at = Some(chrono::Utc::now());
+                    }
+                    UploadState::Failed => {
+                        // error 应该在调用前设置
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+
+        // 发送状态变更事件
+        self.emit_state_change(handle.task.id, old_state, new_state);
+
+        Ok(())
+    }
+
+    /// 验证状态转换是否合法
+    fn is_valid_transition(from: UploadState, to: UploadState) -> bool {
+        match (from, to) {
+            // 从 Queued 可以开始上传或取消
+            (UploadState::Queued, UploadState::Uploading) |
+            (UploadState::Queued, UploadState::Cancelled) |
+            (UploadState::Queued, UploadState::Paused) => true,
+
+            // 从 Uploading 可以暂停、取消、完成或失败
+            (UploadState::Uploading, UploadState::Paused) |
+            (UploadState::Uploading, UploadState::Cancelled) |
+            (UploadState::Uploading, UploadState::Completed) |
+            (UploadState::Uploading, UploadState::Failed) => true,
+
+            // 从 Paused 可以恢复或取消
+            (UploadState::Paused, UploadState::Queued) |
+            (UploadState::Paused, UploadState::Cancelled) => true,
+
+            // 其他转换都是非法的
+            _ => false
+        }
     }
 
     async fn handle_task_completion(&mut self, upload_id: UploadId) {
@@ -290,12 +355,10 @@ impl UploadManagerWorker {
         };
 
         if let Some(join_handle) = handle.join_handle.take() {
-            let old_state = handle.task.state;
-
-            println!("{:?}", old_state);
-
             match join_handle.await {
                 Ok(Ok(upload_url)) => {
+                    if ()
+                    
                     handle.task.state = UploadState::Completed;
                     handle.task.completed_at = Some(chrono::Utc::now());
                     self.emit_state_change(upload_id, old_state, UploadState::Completed);
@@ -315,12 +378,6 @@ impl UploadManagerWorker {
                     handle.task.error = Some(format!("Task panicked: {}", err));
                     self.emit_state_change(upload_id, old_state, UploadState::Failed);
                 }
-            }
-
-            // 只有从 Uploading 状态结束的任务才需要减少计数
-            // 如果任务已经是 Cancelled/Paused，说明计数已经在对应的方法中处理过了
-            if old_state == UploadState::Uploading {
-                self.active_uploads -= 1;
             }
         }
     }
