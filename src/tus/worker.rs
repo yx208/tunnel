@@ -47,9 +47,7 @@ impl UploadWorker {
 
         // 执行
         tokio::select! {
-            result = future => {
-                result
-            },
+            result = future => result,
             _ = self.cancellation_token.cancelled() => {
                 Err(TusError::Cancelled)
             }

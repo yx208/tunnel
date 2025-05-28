@@ -8,16 +8,19 @@ use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 
 use tunnel::config::get_config;
-use tunnel::tus::client::{TusClient, UploadStrategy};
-use tunnel::tus::errors::Result;
-use tunnel::tus::manager::{UploadManager, UploadManagerHandle};
-use tunnel::tus::types::UploadEvent;
+use tunnel::tus::{
+    TusClient,
+    Result,
+    UploadEvent,
+    UploadManager,
+    UploadManagerHandle,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let manager_handle = create_manager().await?;
     let manager = Arc::new(Mutex::new(manager_handle));
-    
+
     let event_receiver = {
         let manger_guard = manager.lock().await;
         manger_guard.manager.subscribe_events()
@@ -39,7 +42,7 @@ async fn handle_keyboard(manager_handle: Arc<Mutex<UploadManagerHandle>>) -> Res
                 if kind != KeyEventKind::Press {
                     continue;
                 }
-                
+
                 let handle = manager_handle.lock().await;
 
                 match code {

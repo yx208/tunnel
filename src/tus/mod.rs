@@ -1,10 +1,16 @@
-pub mod client;
+mod client;
 mod constants;
-pub mod errors;
-pub mod metadata;
-pub mod progress;
-pub mod manager;
+mod errors;
+mod metadata;
+mod progress;
+mod manager;
 mod worker;
 mod manager_worker;
 mod task;
-pub mod types;
+mod types;
+
+pub use client::TusClient;
+pub use errors::Result;
+pub use manager::{UploadManager, UploadManagerHandle};
+pub use types::UploadEvent;
+
