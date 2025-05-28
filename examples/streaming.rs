@@ -1,31 +1,36 @@
 #![allow(warnings, warnings)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
+use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+
 use tunnel::config::get_config;
 use tunnel::tus::client::{TusClient, UploadStrategy};
 use tunnel::tus::errors::Result;
 use tunnel::tus::manager::{UploadManager, UploadManagerHandle};
 use tunnel::tus::types::UploadEvent;
-use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let manager_handle = create_manager().await?;
-
-    // 接收消息
-    let events = manager_handle.manager.subscribe_events();
-    let task_handle = tokio::spawn(handle_event(events));
-    let keyboard_handle = tokio::spawn(handle_keyboard(manager_handle));
+    let manager = Arc::new(Mutex::new(manager_handle));
+    
+    let event_receiver = {
+        let manger_guard = manager.lock().await;
+        manger_guard.manager.subscribe_events()
+    };
+    let task_handle = tokio::spawn(handle_event(event_receiver));
+    let keyboard_handle = tokio::spawn(handle_keyboard(manager));
 
     tokio::join!(task_handle, keyboard_handle);
 
     Ok(())
 }
 
-async fn handle_keyboard(manager_handle: UploadManagerHandle) -> Result<()> {
+async fn handle_keyboard(manager_handle: Arc<Mutex<UploadManagerHandle>>) -> Result<()> {
     enable_raw_mode()?;
 
     loop {
@@ -34,6 +39,8 @@ async fn handle_keyboard(manager_handle: UploadManagerHandle) -> Result<()> {
                 if kind != KeyEventKind::Press {
                     continue;
                 }
+                
+                let handle = manager_handle.lock().await;
 
                 match code {
                     KeyCode::Char('q') => {
@@ -41,35 +48,35 @@ async fn handle_keyboard(manager_handle: UploadManagerHandle) -> Result<()> {
                         break;
                     }
                     KeyCode::Char('p') => {
-                        let tasks = manager_handle.manager.get_all_tasks().await?;
+                        let tasks = handle.manager.get_all_tasks().await?;
                         for task in tasks {
-                            manager_handle.manager.pause_upload(task.id).await?;
+                            handle.manager.pause_upload(task.id).await?;
                         }
                     }
                     KeyCode::Char('r') => {
-                        let tasks = manager_handle.manager.get_all_tasks().await?;
+                        let tasks = handle.manager.get_all_tasks().await?;
                         for task in tasks {
-                            manager_handle.manager.resume_upload(task.id).await?;
+                            handle.manager.resume_upload(task.id).await?;
                         }
                     }
                     KeyCode::Char('c') => {
-                        let tasks = manager_handle.manager.get_all_tasks().await?;
+                        let tasks = handle.manager.get_all_tasks().await?;
                         for task in tasks {
-                            manager_handle.manager.cancel_upload(task.id).await?;
+                            handle.manager.cancel_upload(task.id).await?;
                         }
                     }
                     KeyCode::Char('a') => {
                         let config = get_config();
                         let upload_file = PathBuf::from(&config.file_path);
-                        manager_handle.manager.add_upload(upload_file, None).await?;
+                        handle.manager.add_upload(upload_file, None).await?;
                     }
                     KeyCode::Char('l') => {
-                        let tasks = manager_handle.manager.get_all_tasks().await?;
-                        println!("============== All Tasks ==============");
+                        let tasks = handle.manager.get_all_tasks().await?;
+                        println!("============== All Task ==============");
                         for task in tasks {
                             println!("ID: {:?}, Status: {:?}", &task.id, &task.state);
                         }
-                        println!("============== All Tasks ==============");
+                        println!("============== All Task ==============");
                     }
                     _ => {}
                 }
