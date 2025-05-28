@@ -266,6 +266,13 @@ impl UploadManagerWorker {
             token.cancel();
         }
 
+        if let Some(upload_url) = &handle.task.upload_url {
+            let res = self.client.cancel_upload(upload_url).await;
+            if res.is_err() {
+                eprintln!("{:?}", res);
+            }
+        }
+
         let old_state = handle.task.state;
         self.tasks.remove(&upload_id);
         self.queued_tasks.retain(|id| *id != upload_id);
