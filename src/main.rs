@@ -86,10 +86,11 @@ async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
         match event {
             UploadEvent::Progress(progress) => {
                 println!(
-                    "Upload {:?}: {:.1}% ({:.2} MB/s)",
+                    "Upload {:?}: {:.1}% ({:.2} MB/s), eta: {:?}",
                     progress.upload_id,
                     progress.percentage,
-                    progress.instant_speed / (1024.0 * 1024.0)
+                    progress.instant_speed / (1024.0 * 1024.0),
+                    progress.eta
                 );
             }
             UploadEvent::StateChanged { upload_id, old_state, new_state } => {

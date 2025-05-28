@@ -213,9 +213,11 @@ impl ProgressTracker {
 
             // 预计剩余时间
             let eta = if instant_speed > 0.0 {
-                Some(Duration::from_secs_f64(remaining_bytes as f64 / instant_speed))
+                let time = (remaining_bytes as f64 / instant_speed * 100.0).round() / 100.0;
+                Some(Duration::from_secs_f64(time))
             } else if average_speed > 0.0 {
-                Some(Duration::from_secs_f64(remaining_bytes as f64 / average_speed))
+                let time = (remaining_bytes as f64 / average_speed * 100.0).round() / 100.0;
+                Some(Duration::from_secs_f64(time))
             } else {
                 None
             };
