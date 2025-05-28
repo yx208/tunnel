@@ -63,6 +63,14 @@ async fn handle_keyboard(manager_handle: UploadManagerHandle) -> Result<()> {
                         let upload_file = PathBuf::from(&config.file_path);
                         manager_handle.manager.add_upload(upload_file, None).await?;
                     }
+                    KeyCode::Char('l') => {
+                        let tasks = manager_handle.manager.get_all_tasks().await?;
+                        println!("============== All Tasks ==============");
+                        for task in tasks {
+                            println!("ID: {:?}, Status: {:?}", &task.id, &task.state);
+                        }
+                        println!("============== All Tasks ==============");
+                    }
                     _ => {}
                 }
             }

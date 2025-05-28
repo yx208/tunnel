@@ -184,7 +184,6 @@ impl UploadManagerWorker {
     }
 
     async fn add_upload(&mut self, file_path: PathBuf, metadata: Option<HashMap<String, String>>) -> Result<UploadId> {
-        // Verify file
         let file_metadata = tokio::fs::metadata(&file_path).await?;
         if !file_metadata.is_file() {
             return Err(TusError::ParamError("Not a file".to_string()));
@@ -218,8 +217,6 @@ impl UploadManagerWorker {
     }
 
     async fn pause_upload(&mut self, upload_id: UploadId) -> Result<()> {
-        println!("Pause: {:?}", upload_id);
-        
         let handle = self.tasks.get_mut(&upload_id)
             .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
@@ -228,8 +225,6 @@ impl UploadManagerWorker {
                 self.queued_tasks.retain(|id| *id != upload_id);
                 handle.task.state = UploadState::Paused;
                 self.emit_state_change(upload_id, UploadState::Queued, UploadState::Paused);
-
-                Ok(())
             }
             UploadState::Uploading => {
                 if let Some(token) = &handle.cancellation_token {
@@ -239,16 +234,14 @@ impl UploadManagerWorker {
                 handle.task.state = UploadState::Paused;
                 self.active_uploads.remove(&upload_id);
                 self.emit_state_change(upload_id, UploadState::Uploading, UploadState::Paused);
-
-                Ok(())
             }
-            _ => Err(TusError::ParamError(format!("Cannot pause task in state {:?}", handle.task.state)))
+            _ => {}
         }
+
+        Ok(())
     }
 
     async fn resume_upload(&mut self, upload_id: UploadId) -> Result<()> {
-        println!("Resume: {:?}", upload_id);
-        
         let handle = self.tasks.get_mut(&upload_id)
             .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
@@ -257,15 +250,14 @@ impl UploadManagerWorker {
                 handle.task.state = UploadState::Queued;
                 self.queued_tasks.push(upload_id);
                 self.emit_state_change(upload_id, UploadState::Paused, UploadState::Queued);
-                Ok(())
             }
-            _ => Err(TusError::ParamError(format!("Cannot resume task in state {:?}", handle.task.state)))
+            _ => {}
         }
+
+        Ok(())
     }
 
     async fn cancel_upload(&mut self, upload_id: UploadId) -> Result<()> {
-        println!("Cancel: {:?}", upload_id);
-        
         let handle = self.tasks.get_mut(&upload_id)
             .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
@@ -274,17 +266,11 @@ impl UploadManagerWorker {
             token.cancel();
         }
 
-        match handle.task.state {
-            UploadState::Queued => {
-                self.queued_tasks.retain(|id| *id != upload_id);
-                self.emit_state_change(upload_id, UploadState::Paused, UploadState::Cancelled);
-            }
-            UploadState::Uploading => {
-                self.active_uploads.remove(&upload_id);
-                self.emit_state_change(upload_id, UploadState::Uploading, UploadState::Cancelled);
-            }
-            _ => {}
-        }
+        let old_state = handle.task.state;
+        self.tasks.remove(&upload_id);
+        self.queued_tasks.retain(|id| *id != upload_id);
+        self.active_uploads.remove(&upload_id);
+        self.emit_state_change(upload_id, old_state, UploadState::Cancelled);
 
         Ok(())
     }
