@@ -115,11 +115,7 @@ async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
 
 async fn create_manager() -> Result<UploadManagerHandle> {
     let config = get_config();
-    let client = TusClient::with_strategy(
-        &config.endpoint,
-        1024 * 1024 * 10,
-        UploadStrategy::Streaming
-    );
+    let client = TusClient::new(&config.endpoint, 1024 * 1024 * 10);
 
     Ok(UploadManager::new(client, 3, None))
 }
