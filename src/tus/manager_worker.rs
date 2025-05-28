@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tokio::sync::{mpsc, broadcast};
 use tokio::task::JoinHandle;
@@ -20,7 +20,7 @@ pub struct UploadManagerWorker {
     max_concurrent: usize,
     tasks: HashMap<UploadId, TaskHandle>,
     queued_tasks: Vec<UploadId>,
-    active_uploads: usize,
+    active_uploads: HashSet<UploadId>,
     state_file: Option<PathBuf>,
 
     event_tx: broadcast::Sender<UploadEvent>,
@@ -42,7 +42,7 @@ impl UploadManagerWorker {
             max_concurrent,
             tasks: HashMap::new(),
             queued_tasks: Vec::new(),
-            active_uploads: 0,
+            active_uploads: HashSet::new(),
             state_file,
             event_tx,
             task_completion_tx,
@@ -76,7 +76,7 @@ impl UploadManagerWorker {
     }
 
     async fn process_queue(&mut self) {
-        while self.active_uploads < self.max_concurrent && !self.queued_tasks.is_empty() {
+        while self.active_uploads.len() < self.max_concurrent && !self.queued_tasks.is_empty() {
             let upload_id = self.queued_tasks.remove(0);
 
             if let Some(handle) = self.tasks.get_mut(&upload_id) {
@@ -135,10 +135,7 @@ impl UploadManagerWorker {
         let join_handle = tokio::spawn(async move {
             let result = worker.run(task, progress_tx).await;
             drop(progress_forward);
-
-            // 通知完成
             let _ = completion_tx.send(upload_id);
-            
             result
         });
 
@@ -146,7 +143,9 @@ impl UploadManagerWorker {
         handle.task.state = UploadState::Uploading;
         handle.task.started_at = Some(chrono::Utc::now());
 
-        self.active_uploads += 1;
+        self.queued_tasks.retain(|id| *id != upload_id);
+        self.active_uploads.insert(upload_id);
+
         self.emit_state_change(upload_id, UploadState::Queued, UploadState::Uploading);
     }
 
@@ -219,6 +218,8 @@ impl UploadManagerWorker {
     }
 
     async fn pause_upload(&mut self, upload_id: UploadId) -> Result<()> {
+        println!("Pause: {:?}", upload_id);
+        
         let handle = self.tasks.get_mut(&upload_id)
             .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
@@ -236,8 +237,8 @@ impl UploadManagerWorker {
                 }
 
                 handle.task.state = UploadState::Paused;
+                self.active_uploads.remove(&upload_id);
                 self.emit_state_change(upload_id, UploadState::Uploading, UploadState::Paused);
-                self.active_uploads -= 1;
 
                 Ok(())
             }
@@ -246,6 +247,8 @@ impl UploadManagerWorker {
     }
 
     async fn resume_upload(&mut self, upload_id: UploadId) -> Result<()> {
+        println!("Resume: {:?}", upload_id);
+        
         let handle = self.tasks.get_mut(&upload_id)
             .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
@@ -261,6 +264,8 @@ impl UploadManagerWorker {
     }
 
     async fn cancel_upload(&mut self, upload_id: UploadId) -> Result<()> {
+        println!("Cancel: {:?}", upload_id);
+        
         let handle = self.tasks.get_mut(&upload_id)
             .ok_or_else(|| TusError::ParamError("Task not found".to_string()))?;
 
@@ -269,83 +274,19 @@ impl UploadManagerWorker {
             token.cancel();
         }
 
-        // 从队列中移除
-        self.queued_tasks.retain(|id| *id != upload_id);
-
-        self.transition_state(&mut handle, UploadState::Cancelled)?;
-
-        Ok(())
-    }
-
-    /// 统一的状态转换方法 - 所有状态改变都必须通过这里
-    fn transition_state(&mut self, handle: &mut TaskHandle, new_state: UploadState) -> Result<()> {
-        let old_state = handle.task.state;
-
-        // 状态相同，无需处理
-        if old_state == new_state {
-            return Ok(());
-        }
-
-        // 验证状态转换是否合法
-        if !Self::is_valid_transition(old_state, new_state) {
-            return Err(TusError::ParamError(
-                format!("Invalid state transition: {:?} -> {:?}", old_state, new_state)
-            ));
-        }
-
-        // 更新状态
-        handle.task.state = new_state;
-
-        // 统一管理活跃计数
-        match (old_state, new_state) {
-            // 开始上传
-            (_, UploadState::Uploading) => {
-                self.active_uploads += 1;
-                handle.task.started_at = Some(chrono::Utc::now());
+        match handle.task.state {
+            UploadState::Queued => {
+                self.queued_tasks.retain(|id| *id != upload_id);
+                self.emit_state_change(upload_id, UploadState::Paused, UploadState::Cancelled);
             }
-            // 结束上传（无论什么原因）
-            (UploadState::Uploading, _) => {
-                self.active_uploads -= 1;
-                match new_state {
-                    UploadState::Completed => {
-                        handle.task.completed_at = Some(chrono::Utc::now());
-                    }
-                    UploadState::Failed => {
-                        // error 应该在调用前设置
-                    }
-                    _ => {}
-                }
+            UploadState::Uploading => {
+                self.active_uploads.remove(&upload_id);
+                self.emit_state_change(upload_id, UploadState::Uploading, UploadState::Cancelled);
             }
             _ => {}
         }
 
-        // 发送状态变更事件
-        self.emit_state_change(handle.task.id, old_state, new_state);
-
         Ok(())
-    }
-
-    /// 验证状态转换是否合法
-    fn is_valid_transition(from: UploadState, to: UploadState) -> bool {
-        match (from, to) {
-            // 从 Queued 可以开始上传或取消
-            (UploadState::Queued, UploadState::Uploading) |
-            (UploadState::Queued, UploadState::Cancelled) |
-            (UploadState::Queued, UploadState::Paused) => true,
-
-            // 从 Uploading 可以暂停、取消、完成或失败
-            (UploadState::Uploading, UploadState::Paused) |
-            (UploadState::Uploading, UploadState::Cancelled) |
-            (UploadState::Uploading, UploadState::Completed) |
-            (UploadState::Uploading, UploadState::Failed) => true,
-
-            // 从 Paused 可以恢复或取消
-            (UploadState::Paused, UploadState::Queued) |
-            (UploadState::Paused, UploadState::Cancelled) => true,
-
-            // 其他转换都是非法的
-            _ => false
-        }
     }
 
     async fn handle_task_completion(&mut self, upload_id: UploadId) {
@@ -355,19 +296,29 @@ impl UploadManagerWorker {
         };
 
         if let Some(join_handle) = handle.join_handle.take() {
+            let old_state = handle.task.state;
             match join_handle.await {
                 Ok(Ok(upload_url)) => {
-                    if ()
-                    
-                    handle.task.state = UploadState::Completed;
-                    handle.task.completed_at = Some(chrono::Utc::now());
-                    self.emit_state_change(upload_id, old_state, UploadState::Completed);
-                    let _ = self.event_tx.send(UploadEvent::Completed { upload_id, upload_url });
+                    if old_state == UploadState::Uploading {
+                        handle.task.state = UploadState::Completed;
+                        handle.task.completed_at = Some(chrono::Utc::now());
+
+                        self.active_uploads.remove(&upload_id);
+                        self.emit_state_change(upload_id, old_state, UploadState::Completed);
+
+                        let _ = self.event_tx.send(UploadEvent::Completed { upload_id, upload_url });
+                    }
                 }
                 Ok(Err(err)) => {
+                    // 由 Cancellation Token 触发
+                    if matches!(err, TusError::Cancelled){
+                        return;
+                    }
+
                     handle.task.state = UploadState::Failed;
                     handle.task.error = Some(err.to_string());
                     self.emit_state_change(upload_id, old_state, UploadState::Failed);
+
                     let _ = self.event_tx.send(UploadEvent::Failed {
                         upload_id,
                         error: err.to_string()
