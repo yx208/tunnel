@@ -38,7 +38,7 @@ async fn handle_keyboard(manager_handle: UploadManagerHandle) -> Result<()> {
                 match code {
                     KeyCode::Char('q') => {
                         println!("👋 Quitting...");
-                        std::process::exit(0);
+                        break;
                     }
                     KeyCode::Char('p') => {
                         let tasks = manager_handle.manager.get_all_tasks().await?;
@@ -76,6 +76,9 @@ async fn handle_keyboard(manager_handle: UploadManagerHandle) -> Result<()> {
             }
         }
     }
+
+    disable_raw_mode()?;
+    std::process::exit(0);
 }
 
 async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
@@ -93,7 +96,7 @@ async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
                 println!("Upload {:?}: {:?} -> {:?}", upload_id, old_state, new_state);
             }
             UploadEvent::Completed { upload_id, upload_url } => {
-                println!("Upload {:?} completed: {}", upload_id, upload_url);
+                println!("Upload {:?}: completed: {}", upload_id, upload_url);
             }
             UploadEvent::Failed { upload_id, error } => {
                 println!("Upload {:?} failed: {}", upload_id, error);
