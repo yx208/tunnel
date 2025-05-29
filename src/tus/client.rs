@@ -13,7 +13,6 @@ use tokio::fs::File as TokioFile;
 use tokio::io::AsyncSeekExt;
 use tokio_util::io::ReaderStream;
 use base64::Engine;
-use base64::prelude::BASE64_STANDARD;
 use crate::config::get_config;
 use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo, ProgressStream, ProgressTracker};
@@ -48,16 +47,6 @@ impl TusClient {
         headers.insert("mac-organization", HeaderValue::from_static("3"));
 
         headers
-    }
-
-    pub fn get_file_metadata(file_path: &Path) -> Result<String> {
-        let filename = file_path.file_name()
-            .ok_or(TusError::InvalidFile("Can't be read filename".to_string()))?
-            .to_str()
-            .ok_or(TusError::InvalidFile("The file name 'to_str' failed".to_string()))?;
-        let encoded_filename = BASE64_STANDARD.encode(filename);
-
-        Ok(format!("filename {}", encoded_filename))
     }
 
     pub fn parse_offset_header(status: u16, headers: &HeaderMap) -> Result<u64> {

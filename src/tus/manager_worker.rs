@@ -75,6 +75,47 @@ impl UploadManagerWorker {
         }
     }
 
+    async fn handle_command(&mut self, command: ManagerCommand) {
+        match command {
+            ManagerCommand::AddUpload { file_path, metadata, reply } => {
+                let result = self.add_upload(file_path, metadata).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::PauseUpload { upload_id, reply } => {
+                let result = self.pause_upload(upload_id).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::ResumeUpload { upload_id, reply } => {
+                let result = self.resume_upload(upload_id).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::CancelUpload { upload_id, reply } => {
+                let result = self.cancel_upload(upload_id).await;
+                let _ = reply.send(result);
+            }
+            ManagerCommand::GetTask { upload_id, reply } => {
+                let task = self.tasks
+                    .get(&upload_id)
+                    .map(|handle| handle.task.clone());
+                let _ = reply.send(task);
+            }
+            ManagerCommand::GetAllTasks { reply } => {
+                let tasks: Vec<_> = self.tasks
+                    .values()
+                    .map(|handle| handle.task.clone())
+                    .collect();
+                let _ = reply.send(tasks);
+            }
+            ManagerCommand::Clean { reply } => {
+                self.tasks.retain(|_, task_handle| {
+                    task_handle.task.state != UploadState::Completed && task_handle.task.state != UploadState::Failed
+                });
+                
+                let _ = reply.send(Ok(()));
+            }
+        }
+    }
+
     async fn process_queue(&mut self) {
         while self.active_uploads.len() < self.max_concurrent && !self.queued_tasks.is_empty() {
             let upload_id = self.queued_tasks.remove(0);
@@ -147,47 +188,6 @@ impl UploadManagerWorker {
         self.active_uploads.insert(upload_id);
 
         self.emit_state_change(upload_id, UploadState::Queued, UploadState::Uploading);
-    }
-
-    async fn handle_command(&mut self, command: ManagerCommand) {
-        match command {
-            ManagerCommand::AddUpload { file_path, metadata, reply } => {
-                let result = self.add_upload(file_path, metadata).await;
-                let _ = reply.send(result);
-            }
-            ManagerCommand::PauseUpload { upload_id, reply } => {
-                let result = self.pause_upload(upload_id).await;
-                let _ = reply.send(result);
-            }
-            ManagerCommand::ResumeUpload { upload_id, reply } => {
-                let result = self.resume_upload(upload_id).await;
-                let _ = reply.send(result);
-            }
-            ManagerCommand::CancelUpload { upload_id, reply } => {
-                let result = self.cancel_upload(upload_id).await;
-                let _ = reply.send(result);
-            }
-            ManagerCommand::GetTask { upload_id, reply } => {
-                let task = self.tasks
-                    .get(&upload_id)
-                    .map(|handle| handle.task.clone());
-                let _ = reply.send(task);
-            }
-            ManagerCommand::GetAllTasks { reply } => {
-                let tasks: Vec<_> = self.tasks
-                    .values()
-                    .map(|handle| handle.task.clone())
-                    .collect();
-                let _ = reply.send(tasks);
-            }
-            ManagerCommand::Clean { reply } => {
-                self.tasks.retain(|_, task_handle| {
-                    task_handle.task.state != UploadState::Completed && task_handle.task.state != UploadState::Failed
-                });
-                
-                let _ = reply.send(Ok(()));
-            }
-        }
     }
 
     async fn add_upload(&mut self, file_path: PathBuf, metadata: Option<HashMap<String, String>>) -> Result<UploadId> {
