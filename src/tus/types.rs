@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
+use super::errors::Result;
 use super::task::UploadTask;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -75,25 +76,25 @@ pub enum ManagerCommand {
     AddUpload {
         file_path: PathBuf,
         metadata: Option<HashMap<String, String>>,
-        reply: oneshot::Sender<crate::tus::errors::Result<UploadId>>,
+        reply: oneshot::Sender<Result<UploadId>>,
     },
 
     /// 暂停
     PauseUpload {
         upload_id: UploadId,
-        reply: oneshot::Sender<crate::tus::errors::Result<()>>,
+        reply: oneshot::Sender<Result<()>>,
     },
 
     /// 恢复
     ResumeUpload {
         upload_id: UploadId,
-        reply: oneshot::Sender<crate::tus::errors::Result<()>>,
+        reply: oneshot::Sender<Result<()>>,
     },
 
     /// 取消
     CancelUpload {
         upload_id: UploadId,
-        reply: oneshot::Sender<crate::tus::errors::Result<()>>,
+        reply: oneshot::Sender<Result<()>>,
     },
 
     /// 获取任务信息
@@ -105,5 +106,10 @@ pub enum ManagerCommand {
     /// 获取所有任务
     GetAllTasks {
         reply: oneshot::Sender<Vec<UploadTask>>,
+    },
+
+    /// 清除所有 <Failed/Completed> 状态的任务
+    Clean {
+        reply: oneshot::Sender<Result<()>>,
     }
 }

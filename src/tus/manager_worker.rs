@@ -180,6 +180,13 @@ impl UploadManagerWorker {
                     .collect();
                 let _ = reply.send(tasks);
             }
+            ManagerCommand::Clean { reply } => {
+                self.tasks.retain(|_, task_handle| {
+                    task_handle.task.state != UploadState::Completed && task_handle.task.state != UploadState::Failed
+                });
+                
+                let _ = reply.send(Ok(()));
+            }
         }
     }
 
