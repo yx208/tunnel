@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 use anyhow::Context;
+use async_trait::async_trait;
 use reqwest::header::{HeaderValue, HeaderName, HeaderMap};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, Request, Response, StatusCode};
 use tokio::fs::File as TokioFile;
 use tokio::io::AsyncSeekExt;
 use tokio_util::io::ReaderStream;
@@ -17,6 +18,11 @@ use crate::config::get_config;
 use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo, ProgressStream, ProgressTracker};
 use super::constants::TUS_RESUMABLE;
+
+#[async_trait]
+pub trait RequestHook: Sync + Send {
+    fn before_request(&self, request: &mut Request) -> Result<()>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UploadStrategy {
@@ -27,7 +33,7 @@ pub enum UploadStrategy {
     Streaming
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TusClient {
     pub client: Client,
     pub endpoint: String,
@@ -35,9 +41,22 @@ pub struct TusClient {
     pub strategy: UploadStrategy,
     pub speed_limit: Option<u64>,
     pub headers: HashMap<String, String>,
+    request_hook: Option<Arc<dyn RequestHook>>,
 }
 
 impl TusClient {
+    pub fn new(endpoint: &str, buffer_size: usize) -> Self {
+        Self {
+            client: Client::new(),
+            buffer_size,
+            endpoint: endpoint.to_string(),
+            strategy: UploadStrategy::Streaming,
+            speed_limit: None,
+            headers: HashMap::new(),
+            request_hook: None,
+        }
+    }
+
     pub fn create_headers() -> HeaderMap {
         let config = get_config();
         let mut headers = HeaderMap::new();
@@ -69,36 +88,39 @@ impl TusClient {
             None => Err(TusError::server_error(status, "No 'upload-offset' header in response"))
         }
     }
-}
 
-impl TusClient {
-    pub fn new(endpoint: &str, buffer_size: usize) -> Self {
-        Self {
-            client: Client::new(),
-            buffer_size,
-            endpoint: endpoint.to_string(),
-            strategy: UploadStrategy::Streaming,
-            speed_limit: None,
-            headers: HashMap::new(),
+    pub fn with_hook(mut self, request_hook: impl RequestHook + 'static) -> Self {
+        self.request_hook = Some(Arc::new(request_hook));
+        self
+    }
+
+    /// 执行请求
+    async fn execute(&self, mut request: Request) -> Result<Response> {
+        if let Some(hook) = &self.request_hook {
+            hook.before_request(&mut request)?;
         }
+
+        Ok(self.client.execute(request).await?)
     }
 
     pub async fn create_upload(&self, file_size: u64, metadata: Option<HashMap<String, String>>) -> Result<String> {
-        let mut headers = TusClient::create_headers();
-        headers.insert("Upload-Length", file_size.to_string().parse()?);
+        let mut request = self.client
+            .post(&self.endpoint)
+            .header("Tus-Resumable", "1.0.0")
+            .header("Upload-Length", file_size);
 
+        // Insert metadata header
         if let Some(meta) = metadata {
             for (k, v) in meta {
-                headers.insert(HeaderName::from_str(&k)?, v.parse()?);
+                request = request.header(
+                    HeaderName::from_str(&k)?,
+                    HeaderValue::from_str(&v)?
+                );
             }
         }
-
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .headers(headers)
-            .send()
-            .await?;
+        
+        let request = request.build()?;
+        let response = self.execute(request).await?;
 
         if response.status() != StatusCode::CREATED {
             return Err(TusError::server_error(response.status().as_u16(), "Failed to create upload"));
@@ -126,9 +148,11 @@ impl TusClient {
     }
 
     pub async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
-        let headers = TusClient::create_headers();
-
-        let response = self.client.head(upload_url).headers(headers).send().await?;
+        let request = self.client
+            .head(upload_url)
+            .header("Tus-Resumable", "1.0.0")
+            .build()?;
+        let response = self.execute(request).await?;
 
         let status = response.status();
         if response.status() != StatusCode::OK && response.status() != StatusCode::NO_CONTENT {
@@ -199,17 +223,16 @@ impl TusClient {
         };
 
         let remaining_size = file_size - offset;
-        let mut headers = TusClient::create_headers();
-        headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
-        headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
-        headers.insert("Content-Length", HeaderValue::from_str(&remaining_size.to_string())?);
-
-        let response = self.client
+        let request = self.client
             .patch(upload_url)
-            .headers(headers)
             .body(body)
-            .send()
-            .await?;
+            .header("Tus-Resumable", "1.0.0")
+            .header("Content-Type", "application/offset+octet-stream")
+            .header("Content-Length", remaining_size)
+            .header("Upload-Offset", offset)
+            .build()?;
+        
+        let response = self.execute(request).await?;
 
         // 验证响应
         let status = response.status();

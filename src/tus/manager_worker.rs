@@ -145,6 +145,7 @@ impl UploadManagerWorker {
                     handle.task.state = UploadState::Failed;
                     handle.task.error = Some(err.to_string());
                     self.emit_state_change(upload_id, UploadState::Queued, UploadState::Failed);
+                    let _ = self.event_tx.send(UploadEvent::Failed { upload_id, error: err.to_string() });
                     return;
                 }
             }
@@ -310,6 +311,8 @@ impl UploadManagerWorker {
                     }
                 }
                 Ok(Err(err)) => {
+                    println!("Error: {:?}", err);
+                    
                     // 由 Cancellation Token 触发
                     if matches!(err, TusError::Cancelled){
                         return;
