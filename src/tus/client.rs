@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 use anyhow::Context;
-use async_trait::async_trait;
 use reqwest::header::{HeaderValue, HeaderName, HeaderMap};
 use reqwest::{Client, Request, Response, StatusCode};
 use tokio::fs::File as TokioFile;
@@ -19,7 +18,7 @@ use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo, ProgressStream, ProgressTracker};
 use super::constants::TUS_RESUMABLE;
 
-#[async_trait]
+/// 请求钩子 trait
 pub trait RequestHook: Sync + Send {
     fn before_request(&self, request: &mut Request) -> Result<()>;
 }
