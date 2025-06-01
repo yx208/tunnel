@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-
+use reqwest::Request;
 use tunnel::config::get_config;
 use tunnel::tus::{
     TusClient,
@@ -14,6 +14,7 @@ use tunnel::tus::{
     UploadEvent,
     UploadManager,
     UploadManagerHandle,
+    RequestHook
 };
 
 #[tokio::main]
@@ -116,9 +117,22 @@ async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
     }
 }
 
+struct TusRequestHook;
+
+impl RequestHook for TusRequestHook {
+    fn before_request(&self, request: &mut Request) -> Result<()> {
+        let config = get_config();
+        let headers = request.headers_mut();
+        headers.insert("Authorization", config.token.parse()?);
+        Ok(())
+    }
+}
+
 async fn create_manager() -> Result<UploadManagerHandle> {
     let config = get_config();
-    let client = TusClient::new(&config.endpoint, 1024 * 1024 * 10);
+    let hook = TusRequestHook {};
+    let client = TusClient::new(&config.endpoint, 1024 * 1024 * 10)
+        .with_hook(hook);
 
     Ok(UploadManager::new(client, 3, None))
 }

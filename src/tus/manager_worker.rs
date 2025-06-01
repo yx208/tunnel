@@ -311,8 +311,6 @@ impl UploadManagerWorker {
                     }
                 }
                 Ok(Err(err)) => {
-                    println!("Error: {:?}", err);
-                    
                     // 由 Cancellation Token 触发
                     if matches!(err, TusError::Cancelled){
                         return;
