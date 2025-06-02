@@ -65,6 +65,7 @@ async fn handle_keyboard(manager_handle: Arc<Mutex<UploadManagerHandle>>) -> Res
                     }
                     KeyCode::Char('c') => {
                         let tasks = handle.manager.get_all_tasks().await?;
+                        println!("Cancel is send");
                         for task in tasks {
                             handle.manager.cancel_upload(task.id).await?;
                         }
