@@ -315,14 +315,19 @@ impl UploadManagerWorker {
                     if matches!(err, TusError::Cancelled){
                         return;
                     }
+                    
+                    let err_message = match err {
+                        TusError::ServerError { message, .. } => message.clone(),
+                        _ => err.to_string()
+                    };
 
                     handle.task.state = UploadState::Failed;
-                    handle.task.error = Some(err.to_string());
+                    handle.task.error = Some(err_message.clone());
+                    
                     self.emit_state_change(upload_id, old_state, UploadState::Failed);
-
                     let _ = self.event_tx.send(UploadEvent::Failed {
                         upload_id,
-                        error: err.to_string()
+                        error: err_message
                     });
                 }
                 Err(err) => {

@@ -112,7 +112,7 @@ async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
                 println!("Upload {:?}: completed: {}", upload_id, upload_url);
             }
             UploadEvent::Failed { upload_id, error } => {
-                println!("Upload {:?} failed: {}", upload_id, error);
+                println!("Upload {:?} Failed: {}", upload_id, error);
             }
         }
     }

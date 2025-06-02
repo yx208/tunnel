@@ -226,7 +226,7 @@ impl TusClient {
             .patch(upload_url)
             .body(body)
             .header("Tus-Resumable", "1.0.0")
-            .header("Content-Type", "application/offset+octet-stream")
+            .header("Content-Type", "application/+octet-stream")
             .header("Content-Length", remaining_size)
             .header("Upload-Offset", offset)
             .build()?;
