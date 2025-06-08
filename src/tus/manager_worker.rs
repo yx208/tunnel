@@ -351,7 +351,7 @@ impl UploadManagerWorker {
     async fn save_state(&self) -> Result<()> {
         if let Some(state_file) = &self.state_file {
             let tasks: Vec<_> = self.tasks.values().map(|h| &h.task).collect();
-            let data = serde_json::to_string_pretty(&tasks)?;
+            let data = serde_json::to_string_pretty(&tasks).unwrap();
             tokio::fs::write(state_file, data).await?;
         }
 
@@ -364,8 +364,9 @@ impl UploadManagerWorker {
             if path.exists() {
                 // 读取配置
                 let data = tokio::fs::read_to_string(path).await?;
-                let tasks: Vec<UploadTask> = serde_json::from_str(&data)?;
-                
+                let tasks: Vec<UploadTask> = serde_json::from_str(&data)
+                    .unwrap_or(Vec::new());
+
                 for task in tasks {
                     // 恢复未完成的任务
                     match task.state {

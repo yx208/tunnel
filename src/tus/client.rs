@@ -72,14 +72,14 @@ impl TusClient {
             Some(value) => {
                 let offset =  value
                     .to_str()
-                    .map_err(|err| TusError::HeaderParseError {
-                        header_name: "Upload-Offset".to_string(),
-                        message: err.to_string(),
+                    .map_err(|err| TusError::ServerError {
+                        status_code: status,
+                        message: format!("Failed to parse header <Upload-Offset>: {}", err),
                     })?
                     .parse::<u64>()
-                    .map_err(|err| TusError::HeaderParseError {
-                        header_name: "Upload-Offset".to_string(),
-                        message: err.to_string(),
+                    .map_err(|err| TusError::ServerError {
+                        status_code: status,
+                        message: format!("Failed to parse header <Upload-Offset> to number: {}", err),
                     })?;
 
                 Ok(offset)
@@ -126,7 +126,14 @@ impl TusClient {
         }
 
         let location = match response.headers().get("location") {
-            Some(loc) => loc.to_str()?.to_string(),
+            Some(location) => {
+                location.to_str()
+                    .map_err(|err| TusError::ServerError {
+                        status_code: response.status().as_u16(),
+                        message: format!("Failed to parse location header: {}", err),
+                    })?
+                    .to_string()
+            },
             None => {
                 return Err(TusError::server_error(
                     response.status().as_u16(),
@@ -188,7 +195,7 @@ impl TusClient {
         }
 
         let file = TokioFile::open(file_path).await
-            .with_context(|| format!("Failed to open file: {}", file_path))?;
+            .map_err(|err| TusError::ParamError(format!("Failed to open file: {}", err)))?;
 
         let mut file = file.try_clone().await?;
         file.seek(SeekFrom::Start(offset)).await?;
@@ -263,11 +270,11 @@ impl TusClient {
     {
         let file_size = {
             let path = Path::new(file_path);
-            let mut file =
-                File::open(path).with_context(|| format!("Failed to open file: {}", file_path))?;
+            let mut file = File::open(path)
+                .map_err(|_| TusError::ParamError(format!("Failed to open file: {}", file_path)))?;
             let file_size = file
                 .metadata()
-                .with_context(|| format!("Failed to get metadata for file: {}", file_path))?
+                .map_err(|_| TusError::ParamError(format!("Failed to get metadata: {}", file_path)))?
                 .len();
 
             file_size
