@@ -6,13 +6,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
-use anyhow::Context;
-use reqwest::header::{HeaderValue, HeaderName, HeaderMap};
+use reqwest::header::{HeaderValue, HeaderMap};
 use reqwest::{Client, Request, Response, StatusCode};
 use tokio::fs::File as TokioFile;
 use tokio::io::AsyncSeekExt;
 use tokio_util::io::ReaderStream;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use crate::config::get_config;
 use super::errors::{Result, TusError};
 use super::progress::{ProgressCallback, ProgressInfo, ProgressStream, ProgressTracker};
@@ -110,12 +110,11 @@ impl TusClient {
 
         // Insert metadata header
         if let Some(meta) = metadata {
-            for (k, v) in meta {
-                request = request.header(
-                    HeaderName::from_str(&k)?,
-                    HeaderValue::from_str(&v)?
-                );
-            }
+            let m = encode_metadata(&meta);
+            request = request.header(
+                "Upload-Metadata",
+                HeaderValue::from_str(&m)?,
+            );
         }
         
         let request = request.build()?;
@@ -310,4 +309,15 @@ impl TusClient {
 
         Ok(())
     }
+}
+
+fn encode_metadata(metadata: &HashMap<String, String>) -> String {
+    metadata
+        .iter()
+        .map(|(k, v)| {
+            let encoded_value = STANDARD.encode(v);
+            format!("{}={}", k, encoded_value)
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }

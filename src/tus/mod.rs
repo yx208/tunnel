@@ -7,10 +7,10 @@ mod manager;
 mod worker;
 mod manager_worker;
 mod task;
-mod types;
+pub mod types;
+pub mod progress_aggregator;
 
 pub use client::{TusClient, RequestHook};
 pub use errors::Result;
 pub use manager::{UploadManager, UploadManagerHandle};
-pub use types::UploadEvent;
 
