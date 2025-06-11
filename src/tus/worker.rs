@@ -1,7 +1,8 @@
+use std::mem::take;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tokio::sync::mpsc;
-use crate::tus::progress_aggregator::ProgressAggregator;
+use crate::tus::progress_aggregator::{create_task_progress_callback, ProgressAggregator};
 use super::task::UploadTask;
 use super::errors::{Result, TusError};
 use super::progress::{ProgressInfo};
@@ -21,27 +22,25 @@ impl UploadWorker {
         let upload_url = task.upload_url.as_ref().ok_or_else(|| {
             TusError::ParamError("Upload URL not set".to_string())
         })?;
+        
+        // 如果使用批量进度，注册任务到聚合器
+        if let Some(ref aggregator) = self.progress_aggregator {
+            aggregator.register_task(task.id, file_size);
+        }
 
         // 创建进度回调
-        let upload_id = task.id;
-        let progress_callback = Arc::new(move |info: ProgressInfo| {
-            let _ = progress_tx.send(TaskProgress {
-                upload_id,
-                bytes_uploaded: info.bytes_uploaded,
-                total_bytes: info.total_bytes,
-                instant_speed: info.instant_speed,
-                average_speed: info.average_speed,
-                percentage: info.percentage,
-                eta: info.eta,
-            });
-        });
+        let progress_callback = if let Some(aggregator) = &self.progress_aggregator {
+            Some(create_task_progress_callback(aggregator.clone(), task.id))
+        } else {
+            None
+        };
 
         let future = self.client
             .upload_file_streaming(
                 upload_url,
                 &task.file_path.to_str().unwrap(),
                 file_size,
-                Some(progress_callback)
+                progress_callback
             );
 
         // 执行

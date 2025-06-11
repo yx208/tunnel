@@ -224,9 +224,13 @@ impl UploadManagerWorker {
         };
 
         // 更新状态为准备中
-        let old_state = handle.task.state;
+        // let _ = self.event_tx.send(UploadEvent::StateChanged {
+        //     upload_id,
+        //     old_state: handle.task.state,
+        //     new_state: UploadState::Preparing
+        // });
+        self.emit_state_change(upload_id, handle.task.state, UploadState::Preparing);
         handle.task.state = UploadState::Preparing;
-        self.emit_state_change(upload_id, old_state, UploadState::Preparing);
 
         // 创建上传URL（如果还没有）
         if handle.task.upload_url.is_none() {

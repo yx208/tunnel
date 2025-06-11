@@ -180,16 +180,8 @@ impl TusClient {
 
         if offset > file_size {
             if let Some(callback) = progress_callback {
-                callback(ProgressInfo {
-                    bytes_uploaded: file_size,
-                    total_bytes: file_size,
-                    instant_speed: 0.0,
-                    average_speed: 0.0,
-                    eta: None,
-                    percentage: 0.0,
-                });
+                callback(0);
             }
-
             return Ok(upload_url.to_string());
         }
 
@@ -200,27 +192,7 @@ impl TusClient {
         file.seek(SeekFrom::Start(offset)).await?;
 
         let reader_stream = ReaderStream::with_capacity(file, self.buffer_size);
-
         let body = if let Some(callback) = progress_callback {
-            let tracker = Arc::new(
-                ProgressTracker::new(file_size, offset)
-                    .with_callback(callback)
-                    .with_update_interval(Duration::from_secs(1))
-            );
-
-            // 立即发送初始进度
-            if offset > 0 {
-                let initial_info = ProgressInfo {
-                    bytes_uploaded: offset,
-                    total_bytes: file_size,
-                    instant_speed: 0.0,
-                    average_speed: 0.0,
-                    eta: None,
-                    percentage: (offset as f64 / file_size as f64) * 100.0,
-                };
-                (tracker.callback.as_ref().unwrap())(initial_info);
-            }
-
             let progress_stream = ProgressStream::new(reader_stream, tracker);
             reqwest::Body::wrap_stream(progress_stream)
         } else {

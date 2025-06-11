@@ -27,7 +27,7 @@ pub struct ProgressInfo {
     pub percentage: f64,
 }
 
-pub type ProgressCallback = Arc<dyn Fn(ProgressInfo) + Sync + Send>;
+pub type ProgressCallback = Arc<dyn Fn(u64) + Send + Sync>;
 
 struct SpeedCalculator {
     /// 采样的时间跟字节
