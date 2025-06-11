@@ -51,7 +51,7 @@ impl ProgressAggregator {
     }
 
     /// 启动
-    pub fn start(self) -> ProgressAggregatorHandle {
+    pub fn start(self: Arc<Self>) -> ProgressAggregatorHandle {
         let tasks = self.tasks.clone();
         let enabled = self.enabled.clone();
         let batch_tx = self.batch_tx.clone();
@@ -337,7 +337,7 @@ impl TaskProgressTracker {
 
 /// 进度聚合器句柄
 pub struct ProgressAggregatorHandle {
-    pub aggregator: ProgressAggregator,
+    pub aggregator: Arc<ProgressAggregator>,
     join_handle: tokio::task::JoinHandle<()>,
 }
 

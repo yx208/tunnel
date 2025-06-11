@@ -143,9 +143,19 @@ pub enum ManagerCommand {
         reply: oneshot::Sender<Result<()>>,
     },
 
+    /// 暂停所有
+    PauseAll {
+        reply: oneshot::Sender<Result<()>>,
+    },
+
     /// 恢复
     ResumeUpload {
         upload_id: UploadId,
+        reply: oneshot::Sender<Result<()>>,
+    },
+
+    /// 恢复所有
+    ResumeAll {
         reply: oneshot::Sender<Result<()>>,
     },
 
@@ -173,7 +183,7 @@ pub enum ManagerCommand {
 
     /// 清除所有 <Failed/Completed> 状态的任务
     Clean {
-        reply: oneshot::Sender<Result<usize>>,
+        reply: oneshot::Sender<usize>,
     },
 
     /// 获取当前统计信息
@@ -191,7 +201,7 @@ pub enum ManagerCommand {
 #[derive(Debug, Clone)]
 pub struct UploadConfig {
     /// 最大并发数
-    pub max_concurrent: usize,
+    pub concurrent: usize,
 
     /// 进度更新间隔
     pub progress_interval: Duration,
@@ -209,7 +219,7 @@ pub struct UploadConfig {
     pub retry_delay: Duration,
 
     /// 是否自动保存状态
-    pub auth_save_state: bool,
+    pub auto_save_state: bool,
 
     /// 任务状态文件路径
     pub state_file: Option<PathBuf>,
@@ -218,13 +228,13 @@ pub struct UploadConfig {
 impl Default for UploadConfig {
     fn default() -> Self {
         Self {
-            max_concurrent: 3,
+            concurrent: 3,
             progress_interval: Duration::from_secs(1),
             batch_progress: true,
             chunk_size: 5 * 1024 * 1024, // 5MB
             max_retries: 3,
             retry_delay: Duration::from_secs(5),
-            auth_save_state: true,
+            auto_save_state: true,
             state_file: None,
         }
     }

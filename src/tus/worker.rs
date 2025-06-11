@@ -1,23 +1,22 @@
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tokio::sync::mpsc;
+use crate::tus::progress_aggregator::ProgressAggregator;
 use super::task::UploadTask;
 use super::errors::{Result, TusError};
 use super::progress::{ProgressInfo};
 use super::client::TusClient;
-use super::types::TaskProgress;
+use super::types::{TaskProgress, UploadConfig};
 
 pub struct UploadWorker {
     pub(crate) client: TusClient,
-    pub(crate) cancellation_token: CancellationToken
+    pub(crate) cancellation_token: CancellationToken,
+    pub(crate) config: UploadConfig,
+    pub(crate) progress_aggregator: Option<Arc<ProgressAggregator>>,
 }
 
 impl UploadWorker {
-    pub async fn run(
-        self,
-        task: UploadTask,
-        progress_tx: mpsc::UnboundedSender<TaskProgress>
-    ) -> Result<String> {
+    pub async fn run(self, task: UploadTask) -> Result<String> {
         let file_size = task.file_size;
         let upload_url = task.upload_url.as_ref().ok_or_else(|| {
             TusError::ParamError("Upload URL not set".to_string())
