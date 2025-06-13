@@ -282,9 +282,11 @@ impl UploadManager {
             .await
             .map_err(|_| TusError::internal("Manager shut down"))?;
 
-        reply_rx
+        let count = reply_rx
             .await
-            .map_err(|err| TusError::internal(err.to_string()))?
+            .map_err(|err| TusError::internal(err.to_string()))?;
+        
+        Ok(count)
     }
 
     pub async fn set_progress_interval(&self, interval: Duration) -> Result<()> {
