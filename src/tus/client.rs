@@ -1,21 +1,13 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::SeekFrom;
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use url::Url;
 use reqwest::header::{HeaderValue, HeaderMap};
 use reqwest::{Client, Request, Response, StatusCode};
-use tokio::fs::File as TokioFile;
-use tokio::io::AsyncSeekExt;
-use tokio_util::io::ReaderStream;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use crate::config::get_config;
 use super::errors::{Result, TusError};
-use super::progress::{ProgressCallback, ProgressInfo, ProgressStream, ProgressTracker};
 use super::constants::TUS_RESUMABLE;
 
 /// 请求钩子 trait
@@ -172,39 +164,16 @@ impl TusClient {
     pub async fn upload_file_streaming(
         &self,
         upload_url: &str,
-        file_path: &str,
         file_size: u64,
-        progress_callback: Option<ProgressCallback>
+        offset: u64,
+        body: reqwest::Body,
     ) -> Result<String> {
-        let offset = self.get_upload_offset(upload_url).await?;
-
-        if offset > file_size {
-            if let Some(callback) = progress_callback {
-                callback(0);
-            }
-            return Ok(upload_url.to_string());
-        }
-
-        let file = TokioFile::open(file_path).await
-            .map_err(|err| TusError::ParamError(format!("Failed to open file: {}", err)))?;
-
-        let mut file = file.try_clone().await?;
-        file.seek(SeekFrom::Start(offset)).await?;
-
-        let reader_stream = ReaderStream::with_capacity(file, self.buffer_size);
-        let body = if let Some(callback) = progress_callback {
-            let progress_stream = ProgressStream::new(reader_stream, tracker);
-            reqwest::Body::wrap_stream(progress_stream)
-        } else {
-            reqwest::Body::wrap_stream(reader_stream)
-        };
-
         let remaining_size = file_size - offset;
         let request = self.client
             .patch(upload_url)
             .body(body)
             .header("Tus-Resumable", "1.0.0")
-            .header("Content-Type", "application/+octet-stream")
+            .header("Content-Type", "application/offset+octet-stream")
             .header("Content-Length", remaining_size)
             .header("Upload-Offset", offset)
             .build()?;
@@ -230,38 +199,6 @@ impl TusClient {
         }
 
         Ok(upload_url.to_string())
-    }
-
-    pub async fn upload_file(
-        &self,
-        file_path: &str,
-        metadata: Option<HashMap<String, String>>,
-        callback: Option<ProgressCallback>
-    ) -> Result<String>
-    {
-        let file_size = {
-            let path = Path::new(file_path);
-            let mut file = File::open(path)
-                .map_err(|_| TusError::ParamError(format!("Failed to open file: {}", file_path)))?;
-            let file_size = file
-                .metadata()
-                .map_err(|_| TusError::ParamError(format!("Failed to get metadata: {}", file_path)))?
-                .len();
-
-            file_size
-        };
-
-        // Create TUS upload URL
-        let upload_url = self.create_upload(file_size, metadata).await?;
-
-        match self.strategy {
-            UploadStrategy::Streaming => {
-                self.upload_file_streaming(&upload_url, &file_path, file_size, callback).await?;
-            }
-            _ => {}
-        };
-
-        Ok(upload_url)
     }
 
     pub async fn cancel_upload(&self, upload_url: &str) -> Result<()> {

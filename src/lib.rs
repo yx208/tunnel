@@ -2,4 +2,4 @@
 
 pub mod tus;
 pub mod config;
-pub mod tus_improved;
+// pub mod tus_improved;

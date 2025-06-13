@@ -11,11 +11,11 @@ use tunnel::config::get_config;
 use tunnel::tus::{
     TusClient,
     Result,
-    UploadEvent,
     UploadManager,
     UploadManagerHandle,
     RequestHook
 };
+use tunnel::tus::types::{UploadEvent, UploadConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -96,13 +96,14 @@ async fn handle_keyboard(manager_handle: Arc<Mutex<UploadManagerHandle>>) -> Res
 async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
     while let Ok(event) = event_rx.recv().await {
         match event {
-            UploadEvent::Progress(progress) => {
+            UploadEvent::BatchProgress(batch_progress) => {
+                let progress = batch_progress.aggregated;
                 println!(
                     "Upload {:?}: {:.1}% ({:.2} MB/s), eta: {:?}",
-                    progress.upload_id,
-                    progress.percentage,
-                    progress.instant_speed / (1024.0 * 1024.0),
-                    progress.eta
+                    progress.active_tasks,
+                    progress.overall_percentage,
+                    progress.overall_speed / (1024.0 * 1024.0),
+                    progress.overall_eta
                 );
             }
             UploadEvent::StateChanged { upload_id, old_state, new_state } => {
@@ -113,6 +114,9 @@ async fn handle_event(mut event_rx: broadcast::Receiver<UploadEvent>) {
             }
             UploadEvent::Failed { upload_id, error } => {
                 println!("Upload {:?} Failed: {}", upload_id, error);
+            }
+            UploadEvent::AllCompleted { .. } => {
+                println!("Finished");
             }
         }
     }
@@ -134,6 +138,6 @@ async fn create_manager() -> Result<UploadManagerHandle> {
     let hook = TusRequestHook {};
     let client = TusClient::new(&config.endpoint, 1024 * 1024 * 10)
         .with_hook(hook);
-
-    Ok(UploadManager::new(client, 3, None))
+    let upload_config = UploadConfig::default();
+    Ok(UploadManager::new(client, upload_config))
 }
