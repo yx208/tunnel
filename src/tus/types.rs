@@ -186,11 +186,6 @@ pub enum ManagerCommand {
         reply: oneshot::Sender<usize>,
     },
 
-    /// 获取当前统计信息
-    GetStats {
-        reply: oneshot::Sender<Option<AggregatedStats>>,
-    },
-
     /// 设置进度更新间隔
     SetProgressInterval {
         interval: Duration,

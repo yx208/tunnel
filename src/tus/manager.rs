@@ -258,22 +258,6 @@ impl UploadManager {
         Ok(tasks)
     }
 
-    /// 获取当前统计信息（立即获取，不等待批量更新）
-    pub async fn get_stats(&self) -> Result<Option<AggregatedStats>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(ManagerCommand::GetStats { reply: reply_tx })
-            .await
-            .map_err(|_| TusError::internal("Manager shut down"))?;
-
-        let result = reply_rx
-            .await
-            .map_err(|err| TusError::internal(err.to_string()))?;
-
-        Ok(result)
-    }
-
     /// 清理已完成/失败的任务
     pub async fn clean(&self) -> Result<usize> {
         let (reply_tx, reply_rx) = oneshot::channel();

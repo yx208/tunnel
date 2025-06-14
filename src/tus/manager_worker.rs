@@ -179,10 +179,6 @@ impl UploadManagerWorker {
                     .collect();
                 let _ = reply.send(tasks);
             }
-            ManagerCommand::GetStats { reply } => {
-                let stats = self.progress_aggregator.get_current_stats();
-                let _ = reply.send(stats);
-            }
             ManagerCommand::Clean { reply } => {
                 let mut cleaned = 0;
                 self.tasks.retain(|_, task_handle| {

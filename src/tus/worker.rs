@@ -10,10 +10,10 @@ use super::client::TusClient;
 use super::types::{UploadConfig};
 
 pub struct UploadWorker {
-    pub(crate) client: TusClient,
-    pub(crate) cancellation_token: CancellationToken,
-    pub(crate) config: UploadConfig,
-    pub(crate) progress_aggregator: Option<Arc<ProgressAggregator>>,
+    pub client: TusClient,
+    pub cancellation_token: CancellationToken,
+    pub config: UploadConfig,
+    pub progress_aggregator: Option<Arc<ProgressAggregator>>,
 }
 
 impl UploadWorker {
@@ -33,13 +33,14 @@ impl UploadWorker {
         if let Some(aggregator) = &self.progress_aggregator {
             aggregator.register_task(task.id, file_size);
             // 更新初始进度
-            if offset >= 0 {
+            if offset > 0 {
                 aggregator.update_task_progress(task.id, offset);
             }
         }
 
         let file = File::open(task.file_path).await?;
         let file_stream = ReaderStream::with_capacity(file, self.config.chunk_size);
+
         let body = if let Some(aggregator) = &self.progress_aggregator {
             let progress_stream = AggregatedProgressStream::new(
                 file_stream,
@@ -57,8 +58,16 @@ impl UploadWorker {
 
         // 执行
         tokio::select! {
-            result = future => result,
+            result = future => {
+                if let Some(aggregator) = &self.progress_aggregator {
+                    aggregator.unregister_task(task.id);
+                }
+                result
+            },
             _ = self.cancellation_token.cancelled() => {
+                if let Some(aggregator) = &self.progress_aggregator {
+                    aggregator.unregister_task(task.id);
+                }
                 Err(TusError::Cancelled)
             }
         }
