@@ -9,7 +9,6 @@ mod task;
 pub mod types;
 pub mod progress_aggregator;
 mod progress_stream;
-// mod progress;
 
 pub use client::{TusClient, RequestHook};
 pub use errors::Result;
