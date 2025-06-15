@@ -291,7 +291,7 @@ impl AtomicTaskTracker {
 
     fn get_stats(&self) -> TaskStats {
         let bytes_uploaded = self.bytes_uploaded.load(Ordering::Relaxed);
-        let calculator = self.speed_calculator.lock();
+        let mut calculator = self.speed_calculator.lock();
 
         let instant_speed = calculator.get_instant_speed();
         let average_speed = self.calculate_average_speed(bytes_uploaded);
@@ -346,6 +346,9 @@ struct SpeedCalculator {
     write_index: usize,
     sample_count: usize,
     max_samples: usize,
+    // 添加速度平滑
+    smoothed_speed: f64,
+    smoothing_factor: f64,
 }
 
 /// 样本
@@ -357,7 +360,7 @@ struct SpeedSample {
 
 impl SpeedCalculator {
     fn new() -> Self {
-        let max_samples = 20;
+        let max_samples = 30;  // 增加样本数量以获得更稳定的速度
         Self {
             samples: vec![SpeedSample {
                 bytes_total: 0,
@@ -366,10 +369,21 @@ impl SpeedCalculator {
             write_index: 0,
             sample_count: 0,
             max_samples,
+            smoothed_speed: 0.0,
+            smoothing_factor: 0.15,  // EMA 平滑因子
         }
     }
 
     fn add_sample(&mut self, bytes_total: u64, timestamp: Instant) {
+        // 忽略太频繁的更新（小于50ms）
+        if self.sample_count > 0 {
+            let last_idx = (self.write_index + self.max_samples - 1) % self.max_samples;
+            let time_since_last = timestamp.duration_since(self.samples[last_idx].timestamp);
+            if time_since_last.as_millis() < 50 {
+                return;
+            }
+        }
+
         // 存储新样本
         self.samples[self.write_index] = SpeedSample {
             bytes_total,
@@ -380,41 +394,69 @@ impl SpeedCalculator {
         self.sample_count = self.sample_count.saturating_add(1).min(self.max_samples);
     }
 
-    fn get_instant_speed(&self) -> f64 {
+    fn get_instant_speed(&mut self) -> f64 {
         if self.sample_count < 2 {
             return 0.0;
         }
 
-        // 使用最近的样本计算瞬时速度
-        let window_size = (self.sample_count / 3).max(2).min(5);
-
-        // 获取最新和最旧的样本索引
+        // 使用较长的时间窗口（至少1秒）来计算速度
+        let min_time_window = Duration::from_secs(1);
+        let max_time_window = Duration::from_secs(5);
+        
         let newest_idx = (self.write_index + self.max_samples - 1) % self.max_samples;
-        let oldest_idx = (self.write_index + self.max_samples - window_size) % self.max_samples;
-
         let newest = &self.samples[newest_idx];
+        
+        // 找到合适的时间窗口内的最旧样本
+        let mut oldest_idx = newest_idx;
+        let mut samples_checked = 0;
+        
+        for i in 1..self.sample_count {
+            let idx = (self.write_index + self.max_samples - i - 1) % self.max_samples;
+            let sample = &self.samples[idx];
+            
+            let time_diff = newest.timestamp.duration_since(sample.timestamp);
+            
+            // 如果时间差超过最大窗口，停止
+            if time_diff > max_time_window {
+                break;
+            }
+            
+            oldest_idx = idx;
+            samples_checked += 1;
+            
+            // 如果时间差至少达到最小窗口，可以使用
+            if time_diff >= min_time_window {
+                break;
+            }
+        }
+        
+        // 如果没有足够的历史数据，返回当前平滑速度
+        if samples_checked == 0 {
+            return self.smoothed_speed;
+        }
+        
         let oldest = &self.samples[oldest_idx];
         
-        // 如果时间戳相同，返回0
-        if newest.timestamp <= oldest.timestamp {
-            return 0.0;
+        // 计算时间差
+        let time_diff = newest.timestamp.duration_since(oldest.timestamp).as_secs_f64();
+        if time_diff < 0.1 {  // 至少100ms
+            return self.smoothed_speed;
         }
         
-        // 计算字节差（处理可能的回退情况）
-        let bytes_diff = if newest.bytes_total >= oldest.bytes_total {
-            newest.bytes_total - oldest.bytes_total
+        // 计算字节差
+        let bytes_diff = newest.bytes_total.saturating_sub(oldest.bytes_total);
+        
+        // 计算原始速度
+        let raw_speed = bytes_diff as f64 / time_diff;
+        
+        // 应用指数移动平均（EMA）平滑
+        self.smoothed_speed = if self.smoothed_speed == 0.0 {
+            raw_speed
         } else {
-            // 如果出现字节数回退（不应该发生），返回0
-            return 0.0;
+            self.smoothed_speed * (1.0 - self.smoothing_factor) + raw_speed * self.smoothing_factor
         };
         
-        let time_diff = newest.timestamp.duration_since(oldest.timestamp).as_secs_f64();
-        
-        if time_diff > 0.0 {
-            bytes_diff as f64 / time_diff
-        } else {
-            0.0
-        }
+        self.smoothed_speed
     }
 }
 

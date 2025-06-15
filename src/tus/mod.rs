@@ -1,7 +1,5 @@
 mod client;
-mod constants;
 mod errors;
-mod metadata;
 mod manager;
 mod worker;
 mod manager_worker;

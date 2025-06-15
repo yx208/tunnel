@@ -8,7 +8,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use crate::config::get_config;
 use super::errors::{Result, TusError};
-use super::constants::TUS_RESUMABLE;
 
 /// 请求钩子 trait
 pub trait RequestHook: Sync + Send {
@@ -51,7 +50,7 @@ impl TusClient {
     pub fn create_headers() -> HeaderMap {
         let config = get_config();
         let mut headers = HeaderMap::new();
-        headers.insert("Tus-Resumable", HeaderValue::from_static(TUS_RESUMABLE));
+        headers.insert("Tus-Resumable", HeaderValue::from_static("1.0.0"));
         headers.insert("Authorization", HeaderValue::from_str(&config.token).unwrap());
         headers.insert("mac-identifier", HeaderValue::from_static("media-web"));
         headers.insert("mac-organization", HeaderValue::from_static("3"));

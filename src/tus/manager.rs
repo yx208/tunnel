@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use super::progress_aggregator::{ProgressAggregator, ProgressAggregatorHandle};
 use super::task::UploadTask;
 use super::manager_worker::UploadManagerWorker;
-use super::types::{AggregatedStats, ManagerCommand, UploadConfig, UploadEvent, UploadId};
+use super::types::{ManagerCommand, UploadConfig, UploadEvent, UploadId};
 use super::errors::{Result, TusError};
 use super::client::TusClient;
 

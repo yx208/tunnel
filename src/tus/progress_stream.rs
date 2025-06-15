@@ -41,8 +41,8 @@ impl<S> AggregatedProgressStream<S> {
             bytes_uploaded,
             last_update_bytes: initial_offset,
             last_update_time: Instant::now(),
-            update_threshold_bytes: 256 * 1024,  // 256KB
-            update_threshold_time: Duration::from_millis(100),  // 100ms
+            update_threshold_bytes: 512 * 1024,  // 512KB - 增加阈值以减少更新频率
+            update_threshold_time: Duration::from_millis(250),  // 250ms - 增加时间间隔
             initial_offset,
         }
     }
