@@ -52,23 +52,13 @@ async fn handle_keyboard(manager_handle: Arc<Mutex<UploadManagerHandle>>) -> Res
                         break;
                     }
                     KeyCode::Char('p') => {
-                        let tasks = handle.manager.get_all_tasks().await?;
-                        for task in tasks {
-                            handle.manager.pause_upload(task.id).await?;
-                        }
+                        handle.manager.pause_all().await?;
                     }
                     KeyCode::Char('r') => {
-                        let tasks = handle.manager.get_all_tasks().await?;
-                        for task in tasks {
-                            handle.manager.resume_upload(task.id).await?;
-                        }
+                        handle.manager.resume_all().await?;
                     }
                     KeyCode::Char('c') => {
-                        let tasks = handle.manager.get_all_tasks().await?;
-                        println!("Cancel is send");
-                        for task in tasks {
-                            handle.manager.cancel_upload(task.id).await?;
-                        }
+                        handle.manager.cancel_all().await?;
                     }
                     KeyCode::Char('a') => {
                         let config = get_config();

@@ -349,6 +349,9 @@ struct SpeedCalculator {
     // 添加速度平滑
     smoothed_speed: f64,
     smoothing_factor: f64,
+    // 记录开始时间，用于初始阶段的速度计算
+    start_time: Instant,
+    first_sample_time: Option<Instant>,
 }
 
 /// 样本
@@ -361,20 +364,28 @@ struct SpeedSample {
 impl SpeedCalculator {
     fn new() -> Self {
         let max_samples = 30;  // 增加样本数量以获得更稳定的速度
+        let now = Instant::now();
         Self {
             samples: vec![SpeedSample {
                 bytes_total: 0,
-                timestamp: Instant::now(),
+                timestamp: now,
             }; max_samples],
             write_index: 0,
             sample_count: 0,
             max_samples,
             smoothed_speed: 0.0,
             smoothing_factor: 0.15,  // EMA 平滑因子
+            start_time: now,
+            first_sample_time: None,
         }
     }
 
     fn add_sample(&mut self, bytes_total: u64, timestamp: Instant) {
+        // 记录第一个真实样本的时间
+        if self.first_sample_time.is_none() && bytes_total > 0 {
+            self.first_sample_time = Some(timestamp);
+        }
+
         // 忽略太频繁的更新（小于50ms）
         if self.sample_count > 0 {
             let last_idx = (self.write_index + self.max_samples - 1) % self.max_samples;
@@ -397,6 +408,32 @@ impl SpeedCalculator {
     fn get_instant_speed(&mut self) -> f64 {
         if self.sample_count < 2 {
             return 0.0;
+        }
+
+        // 在初始阶段（前10秒），使用从开始到现在的平均速度
+        if let Some(first_time) = self.first_sample_time {
+            let elapsed_since_start = Instant::now().duration_since(first_time);
+            if elapsed_since_start < Duration::from_secs(10) {
+                // 使用从开始到现在的总体平均速度
+                let newest_idx = (self.write_index + self.max_samples - 1) % self.max_samples;
+                let newest = &self.samples[newest_idx];
+                let first_idx = (self.write_index + self.max_samples - self.sample_count) % self.max_samples;
+                let first = &self.samples[first_idx];
+                
+                let total_bytes = newest.bytes_total;
+                let total_time = newest.timestamp.duration_since(first_time).as_secs_f64();
+                
+                if total_time > 0.5 {  // 至少0.5秒的数据
+                    let avg_speed = total_bytes as f64 / total_time;
+                    // 在初始阶段使用更大的平滑因子
+                    self.smoothed_speed = if self.smoothed_speed == 0.0 {
+                        avg_speed
+                    } else {
+                        self.smoothed_speed * 0.7 + avg_speed * 0.3
+                    };
+                    return self.smoothed_speed;
+                }
+            }
         }
 
         // 使用较长的时间窗口（至少1秒）来计算速度

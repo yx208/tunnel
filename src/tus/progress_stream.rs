@@ -16,11 +16,6 @@ pin_project! {
         upload_id: UploadId,
         aggregator: Arc<ProgressAggregator>,
         bytes_uploaded: Arc<AtomicU64>,
-
-        last_update_bytes: u64,
-        last_update_time: Instant,
-        update_threshold_bytes: u64,
-        update_threshold_time: Duration,
         initial_offset: u64,
     }
 }
@@ -39,29 +34,7 @@ impl<S> AggregatedProgressStream<S> {
             upload_id,
             aggregator,
             bytes_uploaded,
-            last_update_bytes: initial_offset,
-            last_update_time: Instant::now(),
-            update_threshold_bytes: 512 * 1024,  // 512KB - 增加阈值以减少更新频率
-            update_threshold_time: Duration::from_millis(250),  // 250ms - 增加时间间隔
             initial_offset,
-        }
-    }
-
-    fn should_update(&self, current_bytes: u64) -> bool {
-        let bytes_diff = current_bytes.saturating_sub(self.last_update_bytes);
-        if bytes_diff >= self.update_threshold_bytes {
-            return true;
-        }
-
-        let time_diff = self.last_update_time.elapsed();
-        time_diff >= self.update_threshold_time
-    }
-
-    fn send_update(&mut self, current_bytes: u64, force: bool) {
-        if force || self.should_update(current_bytes) {
-            self.aggregator.update_task_progress(self.upload_id, current_bytes);
-            self.last_update_bytes = current_bytes;
-            self.last_update_time = Instant::now();
         }
     }
 }
@@ -82,15 +55,8 @@ where
                     // 更新已上传字节数
                     let new_total = this.bytes_uploaded.fetch_add(bytes_len as u64, Ordering::Relaxed) + bytes_len as u64;
                     
-                    // 检查是否需要发送更新
-                    let bytes_diff = new_total.saturating_sub(*this.last_update_bytes);
-                    let time_diff = this.last_update_time.elapsed();
-
-                    if bytes_diff >= *this.update_threshold_bytes || time_diff >= *this.update_threshold_time {
-                        this.aggregator.update_task_progress(*this.upload_id, new_total);
-                        *this.last_update_bytes = new_total;
-                        *this.last_update_time = Instant::now();
-                    }
+                    // 直接发送更新，不使用阈值控制
+                    this.aggregator.update_task_progress(*this.upload_id, new_total);
                 }
                 Poll::Ready(Some(Ok(chunk)))
             }
