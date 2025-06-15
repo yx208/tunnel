@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
 use crate::tus::types::{AggregatedStats, BatchProgress, TaskProgress, UploadId};
 
 /// 进度聚合器
@@ -24,9 +25,16 @@ pub struct ProgressAggregator {
 
     /// 是否启用
     enabled: Arc<AtomicBool>,
+
+    /// 活跃任务计数
+    active_task_count: Arc<AtomicUsize>,
+
+    /// 取消令牌
+    cancellation_token: CancellationToken,
 }
 
 /// 进度更新消息
+#[derive(Debug)]
 struct ProgressUpdate {
     upload_id: UploadId,
     bytes_uploaded: u64,
@@ -44,6 +52,8 @@ impl ProgressAggregator {
             batch_tx,
             update_interval: Duration::from_secs(1),
             enabled: Arc::new(AtomicBool::new(true)),
+            active_task_count: Arc::new(AtomicUsize::new(0)),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -58,12 +68,15 @@ impl ProgressAggregator {
         let mut registry = self.registry.write();
         let tracker = Arc::new(AtomicTaskTracker::new(upload_id, total_bytes));
         registry.insert(upload_id, tracker);
+        self.active_task_count.fetch_add(1, Ordering::SeqCst);
     }
 
     /// 注销任务
     pub fn unregister_task(&self, upload_id: UploadId) {
         let mut registry = self.registry.write();
-        registry.remove(&upload_id);
+        if registry.remove(&upload_id).is_some() {
+            self.active_task_count.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     /// 启动
@@ -73,40 +86,46 @@ impl ProgressAggregator {
         let batch_tx = self.batch_tx.clone();
         let enabled = self.enabled.clone();
         let update_interval = self.update_interval;
+        let active_task_count = self.active_task_count.clone();
+        let cancellation_token = self.cancellation_token.clone();
 
-        // 启动更新收集任务
-        let collector_handle = tokio::task::spawn_blocking({
+        // 启动更新收集任务（改为异步任务）
+        let collector_handle = tokio::spawn({
             let registry = registry.clone();
-            move || {
+            let cancellation_token = cancellation_token.clone();
+            
+            async move {
                 let mut pending_updates: HashMap<UploadId, (u64, Instant)> = HashMap::new();
+                
                 loop {
-                    // 批量收集更新（最多等待10ms）
-                    let deadline = Instant::now() + Duration::from_millis(10);
-
-                    while let Ok(update) = update_rx.recv_timeout(
-                        deadline.saturating_duration_since(Instant::now())
-                    ) {
-                        pending_updates.insert(update.upload_id, (update.bytes_uploaded, update.timestamp));
-
-                        // 如果收集了足够多的更新，立即处理
-                        if pending_updates.len() >= 100 {
+                    // 使用 select! 来同时监听取消信号和更新
+                    tokio::select! {
+                        _ = cancellation_token.cancelled() => {
                             break;
                         }
-                    }
+                        _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                            // 批量收集更新
+                            while let Ok(update) = update_rx.try_recv() {
+                                pending_updates.insert(
+                                    update.upload_id, 
+                                    (update.bytes_uploaded, update.timestamp)
+                                );
+                                
+                                // 如果收集了足够多的更新，立即处理
+                                if pending_updates.len() >= 100 {
+                                    break;
+                                }
+                            }
 
-                    if !pending_updates.is_empty() {
-                        let registry_guard = registry.read();
-                        for (upload_id, (bytes, timestamp)) in pending_updates.drain() {
-                            if let Some(tracker) = registry_guard.get(&upload_id) {
-                                tracker.update(bytes, timestamp);
+                            if !pending_updates.is_empty() {
+                                let registry_guard = registry.read();
+                                for (upload_id, (bytes, timestamp)) in pending_updates.drain() {
+                                    if let Some(tracker) = registry_guard.get(&upload_id) {
+                                        tracker.update(bytes, timestamp);
+                                    }
+                                }
                             }
                         }
-                    }
-
-                    // 检查是否应该退出
-                    if update_rx.is_empty() {
-                        println!("Channel is empty");
-                        break;
                     }
                 }
             }
@@ -116,85 +135,96 @@ impl ProgressAggregator {
         let reporter_handle = tokio::spawn({
             let registry = registry.clone();
             let enabled = enabled.clone();
+            let cancellation_token = cancellation_token.clone();
 
             async move {
                 let mut interval = interval(update_interval);
                 interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
                 loop {
-                    interval.tick().await;
-
-                    if !enabled.load(Ordering::Relaxed) {
-                        continue;
-                    }
-
-                    let registry_read = registry.read();
-                    if registry_read.is_empty() {
-                        continue;
-                    }
-
-                    let mut task_progresses = Vec::new();
-                    let mut total_bytes = 0u64;
-                    let mut total_uploaded = 0u64;
-                    let mut total_speed = 0.0;
-                    let mut active_count = 0;
-
-                    for tracker in registry_read.values() {
-                        let stats = tracker.get_stats();
-
-                        total_bytes += stats.total_bytes;
-                        total_uploaded += stats.bytes_uploaded;
-                        total_speed += stats.instant_speed;
-
-                        if stats.percentage < 100.0 {
-                            active_count += 1;
+                    tokio::select! {
+                        _ = cancellation_token.cancelled() => {
+                            break;
                         }
+                        _ = interval.tick() => {
+                            if !enabled.load(Ordering::Relaxed) {
+                                continue;
+                            }
 
-                        task_progresses.push(TaskProgress {
-                            upload_id: stats.upload_id,
-                            bytes_uploaded: stats.bytes_uploaded,
-                            total_bytes: stats.total_bytes,
-                            instant_speed: stats.instant_speed,
-                            average_speed: stats.average_speed,
-                            percentage: stats.percentage,
-                            eta: stats.eta,
-                        });
+                            // 只在有活跃任务时才发送进度更新
+                            if active_task_count.load(Ordering::Relaxed) == 0 {
+                                continue;
+                            }
+
+                            let registry_read = registry.read();
+                            if registry_read.is_empty() {
+                                continue;
+                            }
+
+                            let mut task_progresses = Vec::new();
+                            let mut total_bytes = 0u64;
+                            let mut total_uploaded = 0u64;
+                            let mut total_speed = 0.0;
+                            let mut active_count = 0;
+
+                            for tracker in registry_read.values() {
+                                let stats = tracker.get_stats();
+
+                                total_bytes += stats.total_bytes;
+                                total_uploaded += stats.bytes_uploaded;
+                                total_speed += stats.instant_speed;
+
+                                if stats.percentage < 100.0 {
+                                    active_count += 1;
+                                }
+
+                                task_progresses.push(TaskProgress {
+                                    upload_id: stats.upload_id,
+                                    bytes_uploaded: stats.bytes_uploaded,
+                                    total_bytes: stats.total_bytes,
+                                    instant_speed: stats.instant_speed,
+                                    average_speed: stats.average_speed,
+                                    percentage: stats.percentage,
+                                    eta: stats.eta,
+                                });
+                            }
+
+                            drop(registry_read);
+
+                            // 计算总体统计
+                            let overall_percentage = if total_bytes > 0 {
+                                (total_uploaded as f64 / total_bytes as f64) * 100.0
+                            } else {
+                                0.0
+                            };
+
+                            let overall_eta = if total_speed > 0.0 {
+                                let remaining = total_bytes.saturating_sub(total_uploaded);
+                                Some(Duration::from_secs_f64(remaining as f64 / total_speed))
+                            } else {
+                                None
+                            };
+
+                            let aggregated_stats = AggregatedStats {
+                                total_tasks: task_progresses.len(),
+                                active_tasks: active_count,
+                                total_bytes,
+                                total_uploaded,
+                                overall_speed: total_speed,
+                                overall_percentage,
+                                overall_eta,
+                            };
+
+                            let batch_progress = BatchProgress {
+                                aggregated: aggregated_stats,
+                                timestamp: Instant::now(),
+                                tasks: task_progresses,
+                            };
+
+                            // 发送
+                            let _ = batch_tx.send(batch_progress);
+                        }
                     }
-
-                    drop(registry_read);
-
-                    // 计算总体统计
-                    let overall_percentage = if total_bytes > 0 {
-                        (total_uploaded as f64 / total_bytes as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-
-                    let overall_eta = if total_speed > 0.0 {
-                        let remaining = total_bytes.saturating_sub(total_uploaded);
-                        Some(Duration::from_secs_f64(remaining as f64 / total_speed))
-                    } else {
-                        None
-                    };
-
-                    let aggregated_stats = AggregatedStats {
-                        total_tasks: task_progresses.len(),
-                        active_tasks: active_count,
-                        total_bytes,
-                        total_uploaded,
-                        overall_speed: total_speed,
-                        overall_percentage,
-                        overall_eta,
-                    };
-
-                    let batch_progress = BatchProgress {
-                        aggregated: aggregated_stats,
-                        timestamp: Instant::now(),
-                        tasks: task_progresses,
-                    };
-
-                    // 发送
-                    let _ = batch_tx.send(batch_progress);
                 }
             }
         });
@@ -224,6 +254,11 @@ impl ProgressAggregator {
             timestamp: Instant::now(),
         });
     }
+
+    /// 获取活跃任务数
+    pub fn active_task_count(&self) -> usize {
+        self.active_task_count.load(Ordering::Relaxed)
+    }
 }
 
 struct AtomicTaskTracker {
@@ -246,8 +281,10 @@ impl AtomicTaskTracker {
     }
 
     fn update(&self, bytes_uploaded: u64, timestamp: Instant) {
+        // 更新总字节数
         self.bytes_uploaded.store(bytes_uploaded, Ordering::Relaxed);
 
+        // 更新速度计算器
         let mut calculator = self.speed_calculator.lock();
         calculator.add_sample(bytes_uploaded, timestamp);
     }
@@ -309,11 +346,10 @@ struct SpeedCalculator {
     write_index: usize,
     sample_count: usize,
     max_samples: usize,
-    last_bytes: u64
 }
 
 /// 样本
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct SpeedSample {
     bytes_total: u64,
     timestamp: Instant,
@@ -330,17 +366,11 @@ impl SpeedCalculator {
             write_index: 0,
             sample_count: 0,
             max_samples,
-            last_bytes: 0
         }
     }
 
     fn add_sample(&mut self, bytes_total: u64, timestamp: Instant) {
-        if bytes_total <= self.last_bytes {
-            return;
-        }
-
-        self.last_bytes = bytes_total;
-
+        // 存储新样本
         self.samples[self.write_index] = SpeedSample {
             bytes_total,
             timestamp,
@@ -365,11 +395,22 @@ impl SpeedCalculator {
         let newest = &self.samples[newest_idx];
         let oldest = &self.samples[oldest_idx];
         
-        let bytes_diff = newest.bytes_total.saturating_sub(oldest.bytes_total);
+        // 如果时间戳相同，返回0
+        if newest.timestamp <= oldest.timestamp {
+            return 0.0;
+        }
+        
+        // 计算字节差（处理可能的回退情况）
+        let bytes_diff = if newest.bytes_total >= oldest.bytes_total {
+            newest.bytes_total - oldest.bytes_total
+        } else {
+            // 如果出现字节数回退（不应该发生），返回0
+            return 0.0;
+        };
+        
         let time_diff = newest.timestamp.duration_since(oldest.timestamp).as_secs_f64();
         
         if time_diff > 0.0 {
-            // 应用指数移动平均进行平滑
             bytes_diff as f64 / time_diff
         } else {
             0.0
@@ -397,10 +438,10 @@ pub struct ProgressAggregatorHandle {
 
 impl ProgressAggregatorHandle {
     pub async fn shutdown(self) {
-        self.aggregator.pause();
-        self.collector_handle.abort();
-        self.reporter_handle.abort();
-
+        // 取消所有任务
+        self.aggregator.cancellation_token.cancel();
+        
+        // 等待任务完成
         let _ = tokio::join!(
             self.collector_handle,
             self.reporter_handle

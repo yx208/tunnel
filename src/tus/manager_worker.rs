@@ -56,6 +56,48 @@ pub struct UploadManagerWorker {
 }
 
 impl UploadManagerWorker {
+    /// 检查是否所有任务都已完成
+    fn check_all_completed(&self) {
+        // 检查是否还有活跃或排队的任务
+        if !self.active_uploads.is_empty() || !self.queued_tasks.is_empty() {
+            return;
+        }
+
+        // 检查是否有暂停或准备中的任务
+        let has_pending = self.tasks.values().any(|handle| {
+            matches!(
+                handle.task.state, 
+                UploadState::Queued | UploadState::Preparing | UploadState::Uploading | UploadState::Paused
+            )
+        });
+
+        if has_pending {
+            return;
+        }
+
+        // 计算统计信息
+        let total_tasks = self.tasks.len();
+        let mut total_bytes = 0u64;
+        let mut completed_count = 0;
+
+        for handle in self.tasks.values() {
+            if handle.task.state == UploadState::Completed {
+                total_bytes += handle.task.file_size;
+                completed_count += 1;
+            }
+        }
+
+        // 只有至少有一个完成的任务时才发送事件
+        if completed_count > 0 {
+            let total_duration = self.start_time.elapsed();
+            let _ = self.event_tx.send(UploadEvent::AllCompleted {
+                total_tasks,
+                total_bytes,
+                total_duration,
+            });
+        }
+    }
+
     pub(crate) async fn run(
         client: TusClient,
         config: UploadConfig,
@@ -397,7 +439,8 @@ impl UploadManagerWorker {
 
                         let _ = self.event_tx.send(UploadEvent::Completed { upload_id, upload_url });
 
-                        todo!("check_all_completed")
+                        // 检查是否所有任务都已完成
+                        self.check_all_completed();
                     }
                 }
                 Ok(Err(err)) => {

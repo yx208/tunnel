@@ -57,20 +57,24 @@ impl UploadWorker {
             .upload_file_streaming(upload_url, file_size, offset, body);
 
         // 执行
-        tokio::select! {
-            result = future => {
-                if let Some(aggregator) = &self.progress_aggregator {
-                    aggregator.unregister_task(task.id);
-                }
-                result
-            },
+        let result = tokio::select! {
+            result = future => result,
             _ = self.cancellation_token.cancelled() => {
-                if let Some(aggregator) = &self.progress_aggregator {
-                    aggregator.unregister_task(task.id);
-                }
                 Err(TusError::Cancelled)
             }
+        };
+
+        // 确保在任务完成后更新最终进度
+        if let Some(aggregator) = &self.progress_aggregator {
+            if result.is_ok() {
+                // 如果成功完成，确保进度显示100%
+                aggregator.update_task_progress(task.id, file_size);
+            }
+            // 注销任务
+            aggregator.unregister_task(task.id);
         }
+
+        result
     }
 }
 
