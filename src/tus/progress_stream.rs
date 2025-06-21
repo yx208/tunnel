@@ -2,7 +2,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures::Stream;
 use pin_project_lite::pin_project;
