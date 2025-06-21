@@ -14,21 +14,11 @@ pub trait RequestHook: Sync + Send {
     fn before_request(&self, request: &mut Request) -> Result<()>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum UploadStrategy {
-    /// Not support
-    Chunked,
-
-    /// Default strategy
-    Streaming
-}
-
 #[derive(Clone)]
 pub struct TusClient {
     pub client: Client,
     pub endpoint: String,
     pub buffer_size: usize,
-    pub strategy: UploadStrategy,
     pub speed_limit: Option<u64>,
     pub headers: HashMap<String, String>,
     request_hook: Option<Arc<dyn RequestHook>>,
@@ -40,7 +30,6 @@ impl TusClient {
             client: Client::new(),
             buffer_size,
             endpoint: endpoint.to_string(),
-            strategy: UploadStrategy::Streaming,
             speed_limit: None,
             headers: HashMap::new(),
             request_hook: None,
