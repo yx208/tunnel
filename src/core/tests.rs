@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::core::types::{Priority, TransferId};
+    use crate::core::types::{Priority, TransferId, TransferStats};
     use super::task::TransferTask;
     use super::types:: TransferState;
 
@@ -42,5 +42,22 @@ mod tests {
         assert!(Priority::HIGH > Priority::NORMAL);
         assert!(Priority::NORMAL > Priority::LOW);
         assert_eq!(Priority::default(), Priority::NORMAL);
+    }
+
+    #[test]
+    fn test_transfer_stats() {
+        let mut stats = TransferStats::new(Some(1000));
+
+        assert_eq!(stats.bytes_transferred, 0);
+        assert_eq!(stats.progress_percentage(), 0.0);
+
+        stats.bytes_transferred = 500;
+        assert_eq!(stats.progress_percentage(), 50.0);
+        
+        stats.bytes_transferred = 1000;
+        assert_eq!(stats.progress_percentage(), 100.0);
+        
+        let stats_no_total = TransferStats::new(None);
+        assert_eq!(stats_no_total.progress_percentage(), 0.0);
     }
 }

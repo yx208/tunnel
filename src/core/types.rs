@@ -97,6 +97,26 @@ impl TransferStats {
             retry_count: 0,
         }
     }
+
+    pub fn progress_percentage(&self) -> f64 {
+        if let Some(total) = self.total_bytes {
+            if total > 0 {
+                (self.bytes_transferred as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        if let Some(end_time) = self.end_time {
+            end_time - self.start_time
+        } else {
+            Instant::now() - self.start_time
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -202,4 +222,16 @@ pub struct TransferOptions {
     pub tags: Vec<String>,
     pub auto_start: bool,
     pub config_override: Option<TransferConfig>,
+}
+
+impl Default for TransferOptions {
+    fn default() -> Self {
+        Self {
+            priority: Priority::default(),
+            metadata: serde_json::Value::Null,
+            tags: Vec::new(),
+            auto_start: true,
+            config_override: None,
+        }
+    }
 }

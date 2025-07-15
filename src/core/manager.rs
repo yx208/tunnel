@@ -7,9 +7,10 @@ use super::progress::{ProgressAggregator, ProgressTracker};
 use super::traits::TransferTaskBuilder;
 use super::task::{TaskControl, TaskQueue, TransferTask};
 use super::types::{TransferConfig, TransferEvent, TransferId};
-use super::errors::Result;
+use super::errors::{Result, TransferError};
 
-pub struct TransferManger {
+#[derive(Clone)]
+pub struct TransferManager {
     /// Inner state
     inner: Arc<RwLock<ManagerInner>>,
 
@@ -37,7 +38,7 @@ enum ManagerCommand {
     }
 }
 
-impl TransferManger {
+impl TransferManager {
     pub fn new(config: TransferConfig) -> TransferMangerHandle {
         let (command_tx, command_rx) = mpsc::channel(100);
         let (event_tx, _) = broadcast::channel(1024);
@@ -93,7 +94,7 @@ impl TransferManger {
             progress_tracker: progress_aggregator,
             cancellation_token: CancellationToken::new(),
         };
-        
+
         let handle = tokio::spawn(manager_task.run());
 
         TransferMangerHandle {
@@ -102,11 +103,25 @@ impl TransferManger {
             worker_pool: Some(worker_pool),
         }
     }
+
+    pub async fn add_task(&self, builder: Box<dyn TransferTaskBuilder + Send>) -> Result<TransferId> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ManagerCommand::AddTask { builder, reply: reply_tx })
+            .await
+            .map_err(|_| TransferError::ManagerShutdown)?;
+        
+        reply_rx.await.map_err(|_| TransferError::ManagerShutdown)?
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<TransferEvent> {
+        self.event_tx.subscribe()
+    }
 }
 
-
 pub struct TransferMangerHandle {
-    pub manager: TransferManger,
+    pub manager: TransferManager,
     handle: tokio::task::JoinHandle<()>,
     worker_pool: Option<WorkerPool>,
 }
