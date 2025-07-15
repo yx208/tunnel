@@ -4,3 +4,5 @@ mod types;
 mod task;
 mod errors;
 mod progress;
+mod worker;
+mod tests;

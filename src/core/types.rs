@@ -84,6 +84,21 @@ pub struct TransferStats {
     pub retry_count: u8,
 }
 
+impl TransferStats {
+    pub fn new(total_bytes: Option<u64>) -> Self {
+        Self {
+            start_time: Instant::now(),
+            end_time: None,
+            bytes_transferred: 0,
+            total_bytes,
+            current_speed: 0.0,
+            average_speed: 0.0,
+            eta: None,
+            retry_count: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     pub max_retries: u8,

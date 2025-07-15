@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc, broadcast, oneshot, Semaphore};
-
+use tokio_util::sync::CancellationToken;
+use super::worker::{WorkerPool, WorkerTask};
 use super::progress::{ProgressAggregator, ProgressTracker};
 use super::traits::TransferTaskBuilder;
 use super::task::{TaskControl, TaskQueue, TransferTask};
@@ -80,13 +81,67 @@ impl TransferManger {
             None
         };
 
-        todo!()
+        let (worker_tx, worker_rx) = mpsc::channel(config.max_concurrent * 2);
+        let worker_pool = WorkerPool::new(config.max_concurrent, config.clone())
+            .start(worker_rx, progress_aggregator.clone());
+
+        let manager_task = ManagerTask {
+            inner: inner.clone(),
+            command_rx,
+            worker_tx,
+            event_tx: event_tx.clone(),
+            progress_tracker: progress_aggregator,
+            cancellation_token: CancellationToken::new(),
+        };
+        
+        let handle = tokio::spawn(manager_task.run());
+
+        TransferMangerHandle {
+            manager,
+            handle,
+            worker_pool: Some(worker_pool),
+        }
     }
 }
 
 
 pub struct TransferMangerHandle {
+    pub manager: TransferManger,
+    handle: tokio::task::JoinHandle<()>,
+    worker_pool: Option<WorkerPool>,
+}
 
+struct ManagerTask {
+    inner: Arc<RwLock<ManagerInner>>,
+    command_rx: mpsc::Receiver<ManagerCommand>,
+    event_tx: broadcast::Sender<TransferEvent>,
+    worker_tx: mpsc::Sender<WorkerTask>,
+    progress_tracker: Option<Arc<dyn ProgressTracker>>,
+    cancellation_token: CancellationToken,
+}
+
+impl ManagerTask {
+    async fn run(mut self) {
+        loop {
+            tokio::select! {
+                Some(command) = self.command_rx.recv() => {
+
+                }
+
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    self.check_queue().await;
+                }
+
+                _ = self.cancellation_token.cancelled() => {
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn check_queue(&mut self) {
+
+    }
 }
 
 #[cfg(test)]
