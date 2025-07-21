@@ -140,7 +140,7 @@ impl ManagerTask {
         loop {
             tokio::select! {
                 Some(command) = self.command_rx.recv() => {
-
+                    self.handle_command(command).await;
                 }
 
                 _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
@@ -152,6 +152,10 @@ impl ManagerTask {
                 }
             }
         }
+    }
+    
+    async fn handle_command(&mut self, command: ManagerCommand) {
+        
     }
 
     async fn check_queue(&mut self) {

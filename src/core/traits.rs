@@ -1,7 +1,9 @@
 use std::pin::Pin;
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
+use crate::core::TransferError;
 use super::types::TransferId;
 use super::errors::Result;
 
@@ -83,7 +85,11 @@ pub trait TransferProtocol: Send + Sync + 'static {
 
 /// Transfer chunk
 #[derive(Debug)]
-pub struct TransferChunk {}
+pub struct TransferChunk {
+    pub data: Bytes,
+    pub offset: u64,
+    pub is_final: bool,
+}
 
 #[async_trait]
 pub trait TransferProcessor: Send + Sync {
@@ -105,3 +111,28 @@ pub trait TransferTaskBuilder: Send + Sync {
     /// Build processor
     fn build_processor(&self) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransferProcessor>>> + Send>>;
 }
+
+#[async_trait]
+pub trait RateLimiter: Send + Sync {
+    async fn acquire(&self, bytes: usize) -> Result<()>;
+}
+
+#[async_trait]
+pub trait TransferHook: Send + Sync {
+    async fn before_transfer(&self, ctx: &TransferContext) -> Result<()> {
+        Ok(())
+    }
+
+    async fn before_chunk(&self, ctx: &TransferContext, chunk: &TransferChunk) -> Result<()> {
+        Ok(())
+    }
+
+    async fn after_transfer(&self, ctx: &TransferContext) -> Result<()> {
+        Ok(())
+    }
+
+    async fn on_error(&self, ctx: &TransferContext, error: &TransferError) -> Result<()> {
+        Ok(())
+    }
+}
+

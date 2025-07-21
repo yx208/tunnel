@@ -23,5 +23,6 @@ pub use traits::{
     ProtocolType,
     TransferTaskBuilder,
     TransferChunk,
-    TransferMetadata
+    TransferMetadata,
+    TransferHook
 };

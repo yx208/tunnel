@@ -14,8 +14,20 @@ pub enum TransferError {
     #[error("Protocol error {0}")]
     Protocol(String),
 
+    #[error("Cancelled")]
+    Cancelled,
+
+    #[error("Timeout")]
+    Timeout,
+
     #[error("Invalid header {0}")]
     InvalidHeader(String),
+
+    #[error("Invalid state: expected {expected:?}, got {actual:?}")]
+    InvalidState {
+        expected: String,
+        actual: String,
+    },
 
     #[error("Internal error: {0}")]
     Internal(String),
@@ -25,7 +37,7 @@ pub enum TransferError {
 
     #[error("URL prase error: {0}")]
     UrlParseError(#[from] url::ParseError),
-    
+
     #[error("Transfer incomplete: expected {expected} bytes, got {actual} bytes")]
     Incomplete {
         expected: u64,
@@ -52,6 +64,20 @@ impl TransferError {
 
     pub fn protocol(protocol: impl Into<String>) -> Self {
         Self::Protocol(protocol.into())
+    }
+
+    pub fn invalid_state(expected: impl Into<String>, actual: impl Into<String>) -> Self {
+        Self::InvalidState {
+            expected: expected.into(),
+            actual: actual.into(),
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Network(_) | Self::Http(_) | Self::Timeout
+        )
     }
 }
 

@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
-use crate::core::types::TransferState::{Failed, Queued};
+use super::{Result, TransferError};
+use super::types::TransferState::{Failed, Queued};
 use super::traits::{TransferContext, TransferProtocol};
 use super::types::{
     TransferId,
@@ -17,6 +19,7 @@ pub struct TransferTask {
     pub stats: Arc<RwLock<TransferStats>>,
     pub options: TransferOptions,
     pub protocol: Arc<Box<dyn TransferProtocol>>,
+    
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
     pub completed_at: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
@@ -42,6 +45,67 @@ impl TransferTask {
             started_at: Arc::new(RwLock::new(None)),
             completed_at: Arc::new(RwLock::new(None)),
             error: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    pub async fn set_state(&self, new_state: TransferState) -> Result<TransferState> {
+        let mut state = self.state.write().await;
+        let old_state = *state;
+
+        if !Self::is_valid_transition(old_state, new_state) {
+            return Err(TransferError::invalid_state(
+                format!("{:?}", new_state),
+                format!("{:?}", old_state),
+            ));
+        }
+
+        *state = new_state;
+
+         match new_state {
+             TransferState::Transferring => {
+                 *self.started_at.write().await = Some(chrono::Utc::now());
+             }
+             TransferState::Completed | TransferState::Failed | TransferState::Cancelled => {
+                 *self.completed_at.write().await = Some(chrono::Utc::now());
+                 let mut stats = self.stats.write().await;
+                 stats.end_time = Some(Instant::now());
+             }
+             _ => {}
+         }
+
+        Ok(old_state)
+    }
+
+    pub async fn set_error(&self, error: Option<String>) {
+        *self.error.write().await = error;
+    }
+
+    pub async fn set_current_speed(&self, speed: f64) {
+        let mut stats = self.stats.write().await;
+        stats.current_speed = speed;
+    }
+
+    pub async fn increment_retry_count(&self) {
+        let mut stats = self.stats.write().await;
+        stats.retry_count += 1;
+    }
+
+    pub async fn update_progress(&self, bytes_transferred: u64) {
+        let mut stats = self.stats.write().await;
+        stats.bytes_transferred = bytes_transferred;
+        
+        let elapsed = stats.elapsed().as_secs_f64();
+        if elapsed > 0.0 {
+            stats.average_speed = bytes_transferred as f64 / elapsed;
+            
+            if let Some(total) = stats.total_bytes {
+                let remaining = total.saturating_sub(bytes_transferred);
+                if stats.current_speed > 0.0 && remaining > 0 {
+                    stats.eta = Some(std::time::Duration::from_secs_f64(
+                        remaining as f64 / stats.current_speed
+                    ));
+                }
+            }
         }
     }
 
@@ -76,7 +140,6 @@ impl TransferTask {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub(crate) enum TaskControl {

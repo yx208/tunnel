@@ -1,18 +1,22 @@
-use std::collections::HashMap;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use base64::engine::general_purpose::STANDARD;
 use async_trait::async_trait;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use bytes::Bytes;
 use futures::Stream;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use base64::Engine;
-use bytes::Bytes;
 
 use super::types::{TusConfig, TusMetadata, TusUploadOptions};
 use crate::config::get_config;
-use crate::core::{ProtocolType, Result, TransferChunk, TransferContext, TransferError, TransferId, TransferMetadata, TransferMode, TransferOptions, TransferProcessor, TransferProtocol, TransferTaskBuilder};
+use crate::core::{
+    ProtocolType, Result, TransferChunk, TransferContext, TransferError, TransferId,
+    TransferMetadata, TransferMode, TransferOptions, TransferProcessor, TransferProtocol,
+    TransferTaskBuilder,
+};
 
 struct TusUploadProtocol {
     client: Client,
@@ -33,7 +37,10 @@ impl TusUploadProtocol {
 
     async fn create_upload(&self, file_size: u64) -> Result<String> {
         let mut headers = HeaderMap::new();
-        headers.insert("Tus-Resumable", HeaderValue::from_str(&self.config.tus_version)?);
+        headers.insert(
+            "Tus-Resumable",
+            HeaderValue::from_str(&self.config.tus_version)?,
+        );
         headers.insert("Upload-Length", HeaderValue::from(file_size));
 
         if !self.options.metadata.is_empty() {
@@ -45,12 +52,13 @@ impl TusUploadProtocol {
             for (key, value) in &self.config.headers {
                 headers.insert(
                     HeaderName::from_bytes(key.as_bytes())?,
-                    HeaderValue::from_str(value)?
+                    HeaderValue::from_str(value)?,
                 );
             }
         }
 
-        let response = self.client
+        let response = self
+            .client
             .post(&self.config.endpoint)
             .headers(headers)
             .send()
@@ -59,7 +67,7 @@ impl TusUploadProtocol {
         if response.status() != StatusCode::CREATED {
             return Err(TransferError::protocol_specific(
                 "TUS",
-                format!("Failed to create upload: {}", response.status())
+                format!("Failed to create upload: {}", response.status()),
             ));
         }
 
@@ -68,7 +76,9 @@ impl TusUploadProtocol {
             .get("Location")
             .ok_or_else(|| TransferError::protocol("No Location header in response"))?
             .to_str()
-            .map_err(|err| TransferError::Protocol(format!("Failed to parse Location header: {}", err)))?;
+            .map_err(|err| {
+                TransferError::Protocol(format!("Failed to parse Location header: {}", err))
+            })?;
 
         let upload_url = if location.starts_with("http") {
             location.to_string()
@@ -93,27 +103,26 @@ impl TusUploadProtocol {
 
     async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
         let mut headers = HeaderMap::new();
-        headers.insert("Tus-Resumable", HeaderValue::from_str(&self.config.tus_version)?);
+        headers.insert(
+            "Tus-Resumable",
+            HeaderValue::from_str(&self.config.tus_version)?,
+        );
 
         if !self.config.headers.is_empty() {
             for (key, value) in &self.config.headers {
                 headers.insert(
                     HeaderName::from_bytes(key.as_bytes())?,
-                    HeaderValue::from_str(value)?
+                    HeaderValue::from_str(value)?,
                 );
             }
         }
 
-        let response = self.client
-            .head(upload_url)
-            .headers(headers)
-            .send()
-            .await?;
+        let response = self.client.head(upload_url).headers(headers).send().await?;
 
         if !response.status().is_success() {
             return Err(TransferError::protocol_specific(
                 "TUS",
-                format!("Failed to get upload offset: {}", response.status())
+                format!("Failed to get upload offset: {}", response.status()),
             ));
         }
 
@@ -131,21 +140,31 @@ impl TusUploadProtocol {
 
     async fn upload_chunk(&self, upload_url: &str, offset: u64, data: Bytes) -> Result<u64> {
         let mut headers = HeaderMap::new();
-        headers.insert("Tus-Resumable", HeaderValue::from_str(&self.config.tus_version)?);
+        headers.insert(
+            "Tus-Resumable",
+            HeaderValue::from_str(&self.config.tus_version)?,
+        );
         headers.insert("Upload-Offset", HeaderValue::from_str(&offset.to_string())?);
-        headers.insert("Content-Type", HeaderValue::from_static("application/offset+octet-stream"));
-        headers.insert("Content-Length", HeaderValue::from_str(&data.len().to_string())?);
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_static("application/offset+octet-stream"),
+        );
+        headers.insert(
+            "Content-Length",
+            HeaderValue::from_str(&data.len().to_string())?,
+        );
 
         if !self.config.headers.is_empty() {
             for (key, value) in &self.config.headers {
                 headers.insert(
                     HeaderName::from_bytes(key.as_bytes())?,
-                    HeaderValue::from_str(value)?
+                    HeaderValue::from_str(value)?,
                 );
             }
         }
 
-        let response = self.client
+        let response = self
+            .client
             .patch(upload_url)
             .headers(headers)
             .body(data)
@@ -155,7 +174,7 @@ impl TusUploadProtocol {
         if response.status() != StatusCode::NO_CONTENT {
             return Err(TransferError::protocol_specific(
                 "TUS",
-                format!("Upload failed: {}", response.status())
+                format!("Upload failed: {}", response.status()),
             ));
         }
 
@@ -209,7 +228,7 @@ impl TransferProtocol for TusUploadProtocol {
             resumable: true,
             content_type: self.options.metadata.get("filetype").cloned(),
             filename: self.options.metadata.get("filename").cloned(),
-            extra: serde_json::to_value(&tus_metadata)?
+            extra: serde_json::to_value(&tus_metadata)?,
         };
 
         ctx.metadata = Some(metadata);
@@ -226,7 +245,7 @@ impl TransferProtocol for TusUploadProtocol {
 
         match self.get_upload_offset(&ctx.destination).await {
             Ok(offset) => Ok(offset),
-            Err(_) => Ok(0)
+            Err(_) => Ok(0),
         }
     }
 
@@ -238,7 +257,9 @@ impl TransferProtocol for TusUploadProtocol {
     }
 
     async fn finalize(&self, ctx: &mut TransferContext) -> Result<()> {
-        let expected_size = ctx.metadata.as_ref()
+        let expected_size = ctx
+            .metadata
+            .as_ref()
             .and_then(|m| m.total_size)
             .ok_or_else(|| TransferError::Internal("No file size in metadata".into()))?;
 
@@ -261,7 +282,10 @@ impl TransferProtocol for TusUploadProtocol {
 
         if self.options.delete_on_termination {
             let mut headers = HeaderMap::new();
-            headers.insert("Tus-Resumable", HeaderValue::from_str(&self.config.tus_version)?);
+            headers.insert(
+                "Tus-Resumable",
+                HeaderValue::from_str(&self.config.tus_version)?,
+            );
 
             for (key, value) in &self.config.headers {
                 headers.insert(
@@ -270,7 +294,8 @@ impl TransferProtocol for TusUploadProtocol {
                 );
             }
 
-            let response = self.client
+            let response = self
+                .client
                 .delete(&ctx.destination)
                 .headers(headers)
                 .send()
