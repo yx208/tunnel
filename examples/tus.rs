@@ -10,6 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = presets::performance_config();
     let manger_handle = TransferManager::new(config);
+    
     let manager = manger_handle.manager.clone();
 
     let mut event_rx = manager.subscribe();

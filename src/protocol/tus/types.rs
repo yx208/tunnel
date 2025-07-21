@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct TusConfig {
@@ -68,6 +69,17 @@ impl std::fmt::Display for TusError {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TusMetadata {
+    pub upload_url: String,
+    pub upload_offset: u64,
+    /// file size
+    pub upload_length: u64,
+    pub metadata: HashMap<String, String>,
+    pub extensions: Vec<String>,
+    pub upload_expires: Option<String>,
 }
 
 impl std::error::Error for TusError {}
