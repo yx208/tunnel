@@ -3,7 +3,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum TransferError {
     #[error("Http error: {0}")]
-    Http(#[from] reqwest::Error)
+    Http(#[from] reqwest::Error),
+
+    #[error("Manager is shutdown")]
+    ManagerShutdown,
 }
 
 pub type Result<T> = std::result::Result<T, TransferError>;

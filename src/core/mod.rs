@@ -6,4 +6,6 @@ mod errors;
 
 pub use manager::TransferManager;
 pub use task::TransferTask;
+pub use traits::{TransferProtocol, TransferTaskBuilder};
+pub use errors::{Result, TransferError};
 
