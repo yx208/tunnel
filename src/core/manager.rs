@@ -1,4 +1,3 @@
-use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,6 +5,7 @@ use tokio::select;
 use tokio::time::sleep;
 use tokio::sync::{mpsc, oneshot, broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
+use dashmap::DashMap;
 
 use super::traits::TransferTaskBuilder;
 use super::types::TransferId;
@@ -14,7 +14,6 @@ use super::errors::{Result, TransferError};
 
 pub struct TransferManager {
     command_tx: mpsc::UnboundedSender<ManagerCommand>,
-    tasks: HashMap<TransferId, TransferTask>,
     event_tx: broadcast::Sender<()>,
 }
 
@@ -26,10 +25,10 @@ impl TransferManager {
         let manager = Self {
             command_tx,
             event_tx,
-            tasks: HashMap::new(),
         };
 
         let runner = ManagerRunner {
+            tasks: DashMap::new(),
             queue: Arc::new(RwLock::new(TaskQueue {})),
             command_rx,
             cancellation_token: CancellationToken::new(),
@@ -48,6 +47,17 @@ impl TransferManager {
         self.event_tx.subscribe()
     }
 
+    pub async fn add(&self, builder: Box<dyn TransferTaskBuilder>) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(ManagerCommand::AddTask { builder, reply: tx })
+            .map_err(|_| TransferError::ManagerShutdown)?;
+
+        let _ = rx.await.map_err(|_| TransferError::ManagerShutdown)?;
+
+        Ok(())
+    }
+
     /// 暂停任务
     pub async fn pause(&self, id: TransferId) -> Result<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -57,9 +67,9 @@ impl TransferManager {
 
         reply_rx.await.map_err(|_| TransferError::ManagerShutdown)?
     }
-    
+
     pub async fn cancel_all(&self) {
-        
+
     }
 }
 
@@ -71,10 +81,10 @@ pub struct ManagerHandle {
 impl ManagerHandle {
     async fn shutdown(&self) {
         println!("Manager shutting down");
-        
+
         // 取消所有任务
         self.manager.cancel_all().await;
-        
+
         // 等待 Runner 结束
         self.handle.abort();
     }
@@ -93,6 +103,7 @@ enum ManagerCommand {
 }
 
 pub struct ManagerRunner {
+    tasks: DashMap<TransferId, TransferTask>,
     queue: Arc<RwLock<TaskQueue>>,
     command_rx: mpsc::UnboundedReceiver<ManagerCommand>,
     cancellation_token: CancellationToken,
@@ -109,7 +120,7 @@ impl ManagerRunner {
 
                 // 定时检查任务
                 _ = sleep(Duration::from_millis(1000)) => {
-                    self.check_queue();
+                    self.check_queue().await;
                 }
 
                 // 取消信号
@@ -120,7 +131,7 @@ impl ManagerRunner {
         }
     }
 
-    fn check_queue(&self) {
+    async fn check_queue(&self) {
 
     }
 

@@ -3,6 +3,7 @@ mod types;
 mod traits;
 mod task;
 mod errors;
+mod worker;
 
 pub use manager::TransferManager;
 pub use task::TransferTask;

@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
 pub struct TusConfig {
-    endpoint: String,
+    pub endpoint: String,
+    pub headers: HashMap<String, String>,
 }
