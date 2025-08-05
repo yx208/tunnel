@@ -5,9 +5,10 @@ mod task;
 mod errors;
 mod worker;
 
-pub use manager::{TransferManager, WorkerPool};
+pub use manager::{TransferManager};
+pub use worker::WorkerPool;
 pub use task::TransferTask;
-pub use types::{ProtocolType, TransferConfig};
+pub use types::{ProtocolType, TransferConfig, TransferId};
 pub use traits::{
     TransferProtocol,
     TransferTaskBuilder,

@@ -12,6 +12,7 @@ use crate::core::{
     TransferContext,
     TransferError
 };
+use crate::{ProtocolType, TransferId};
 
 pub struct TusProtocol {
     config: TusConfig,
@@ -158,7 +159,10 @@ impl TransferTaskBuilder for TusTaskBuilder {
     }
 
     fn build_context(&self) -> TransferContext {
-        todo!()
+        TransferContext {
+            id: TransferId::new(),
+            protocol: ProtocolType::Tus
+        }
     }
 }
 

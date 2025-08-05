@@ -1,10 +1,8 @@
 use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::{mpsc, oneshot, broadcast, Semaphore, RwLock};
+use tokio::sync::{mpsc, oneshot, broadcast, Semaphore};
 use tokio_util::sync::CancellationToken;
-use dashmap::DashMap;
-use crate::TransferConfig;
+use crate::{TransferConfig, TransferTask, WorkerPool};
+use crate::core::worker::TaskQueue;
 use super::traits::TransferTaskBuilder;
 use super::types::TransferId;
 use super::errors::{Result, TransferError};
@@ -17,20 +15,25 @@ pub struct TransferManager {
 impl TransferManager {
     pub fn new(config: TransferConfig) -> ManagerHandle {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, _) = broadcast::channel(1024);
+        let (event_tx, _) = broadcast::channel(128);
+        let (task_tx, task_rx) = mpsc::channel(64);
+
+        let cancellation_token = CancellationToken::new();
+        let semaphore = Arc::new(Semaphore::new(config.concurrent));
 
         let manager = Self {
             command_tx,
             event_tx,
         };
-        
+
         let pool_handle = tokio::spawn(
-            WorkerPool::new(config).start()
+            WorkerPool::new(semaphore.clone()).start(task_rx)
         );
 
         let runner = ManagerExecutor {
             command_rx,
-            cancellation_token: CancellationToken::new(),
+            cancellation_token,
+            queue: TaskQueue::new(semaphore, task_tx),
         };
 
         let handle = tokio::spawn(runner.run());
@@ -83,7 +86,7 @@ impl ManagerHandle {
 
         // 停止处理队列
         self.handle.abort();
-        
+
         // 取消所有任务
         self.manager.cancel_all().await;
 
@@ -107,6 +110,7 @@ enum ManagerCommand {
 pub struct ManagerExecutor {
     command_rx: mpsc::UnboundedReceiver<ManagerCommand>,
     cancellation_token: CancellationToken,
+    queue: TaskQueue,
 }
 
 impl ManagerExecutor {
@@ -115,7 +119,7 @@ impl ManagerExecutor {
             tokio::select! {
                 // 处理命令
                 Some(command) = self.command_rx.recv() => {
-                    self.handle_command(command);
+                    self.handle_command(command).await;
                 }
                 // 取消信号
                 _ = self.cancellation_token.cancelled() => {
@@ -125,10 +129,10 @@ impl ManagerExecutor {
         }
     }
 
-    fn handle_command(&self, command: ManagerCommand) {
+    async fn handle_command(&self, command: ManagerCommand) {
         match command {
             ManagerCommand::AddTask { builder, reply } => {
-                let result = self.add_task(builder);
+                let result = self.add_task(builder).await;
                 let _ = reply.send(result);
             }
             ManagerCommand::PauseTask { id, reply } => {
@@ -138,51 +142,23 @@ impl ManagerExecutor {
         }
     }
 
-    fn add_task(&self, builder: Box<dyn TransferTaskBuilder>) -> Result<TransferId> {
+    async fn add_task(&self, builder: Box<dyn TransferTaskBuilder>) -> Result<TransferId> {
         let context = builder.build_context();
         let protocol = builder.build_protocol();
 
-        Ok(TransferId::new())
+        let id = context.id.clone();
+        let task = TransferTask {
+            id: id.clone(),
+            context,
+            protocol: Arc::new(protocol),
+        };
+        
+        self.queue.push(task).await;
+        
+        Ok(id)
     }
 
     fn pause_task(&self, id: TransferId) -> Result<()> {
         Ok(())
     }
-}
-
-pub struct WorkerPool {
-    config: TransferConfig,
-    tasks: Arc<RwLock<DashMap<TransferId, tokio::task::JoinHandle<()>>>>,
-    semaphore: Arc<Semaphore>,
-}
-
-impl WorkerPool {
-    pub fn new(config: TransferConfig) -> Self {
-        Self {
-            semaphore: Arc::new(Semaphore::new(config.concurrent)),
-            tasks: Arc::new(RwLock::new(DashMap::new())),
-            config,
-        }
-    }
-
-    pub async fn start(mut self) {
-        loop {
-            let semaphore = self.semaphore.clone();
-            let permit = semaphore.acquire_owned().await.unwrap();
-            
-            let id = TransferId::new();
-            
-            let id_clone = id.clone();
-            let tasks_clone = self.tasks.clone();
-            let handle = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                drop(permit);
-                tasks_clone.write().await.remove(&id_clone);
-            });
-            
-            self.tasks.write().await.insert(id, handle);
-        }
-    }
-
-    
 }
