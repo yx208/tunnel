@@ -1,39 +1,34 @@
-use std::collections::HashMap;
-use uuid::Uuid;
+use image::imageops;
 
-trait Protocol {
-    fn execute(&self);
-}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let instant = std::time::Instant::now();
+    // 读取图像
+    let img = image::open("C:/Users/Hawthorn/Pictures/Wallpaper/light-blue/322/322-2电脑.png")?;
 
-struct Foo;
+    let nwidth = img.width() / 2;
+    let nheight = img.height() / 2;
+    let change_image = imageops::resize(
+        &img,
+        nwidth,
+        nheight,
+        imageops::FilterType::Lanczos3
+    );
+    let result = change_image.save("C:/Users/Hawthorn/Pictures/Wallpaper/light-blue/322/pc-4k2.png");
 
-impl Foo {
-    fn new() -> Self {
-        Foo
+    println!("{:?}", instant.elapsed().as_secs());
+
+    // 创建输出文件
+    // let file = File::create("C:/Users/Hawthorn/Downloads/output.jpg")?;
+    // let encoder = JpegEncoder::new_with_quality(file, 80);
+    //
+    // let result = encoder.write_image(rgb_image.as_bytes(), nwidth, nheight, image::ExtendedColorType::Rgb8);
+    match result {
+        Ok(_) => {}
+        Err(e) => {
+            println!("{}", e);
+        }
     }
-    
-    fn print(&self) {
-        println!("Foo");
-    }
-}
 
-impl Protocol for Foo {
-    fn execute(&self) {
-        println!("Executing Foo protocol");
-    }
-}
-
-struct Manager {
-    worker: HashMap<Uuid, Box<dyn Protocol>>,
-}
-
-fn main() {
-    let mut map = HashMap::new();
-    map.insert(Uuid::new_v4(), Box::new(Foo::new()) as Box<dyn Protocol>);
-    let manager = Manager { worker: map };
-
-    // 示例：遍历并调用协议方法
-    for (_, protocol_box) in &manager.worker {
-        protocol_box.execute();
-    }
+    println!("图片已压缩并保存为 output.jpg");
+    Ok(())
 }

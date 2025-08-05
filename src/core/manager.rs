@@ -1,15 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::select;
-use tokio::time::sleep;
-use tokio::sync::{mpsc, oneshot, broadcast, RwLock};
+use tokio::sync::{mpsc, oneshot, broadcast, Semaphore, RwLock};
 use tokio_util::sync::CancellationToken;
 use dashmap::DashMap;
-
+use crate::TransferConfig;
 use super::traits::TransferTaskBuilder;
 use super::types::TransferId;
-use super::task::TransferTask;
 use super::errors::{Result, TransferError};
 
 pub struct TransferManager {
@@ -18,7 +15,7 @@ pub struct TransferManager {
 }
 
 impl TransferManager {
-    pub fn new() -> ManagerHandle {
+    pub fn new(config: TransferConfig) -> ManagerHandle {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, _) = broadcast::channel(1024);
 
@@ -26,10 +23,12 @@ impl TransferManager {
             command_tx,
             event_tx,
         };
+        
+        let pool_handle = tokio::spawn(
+            WorkerPool::new(config).start()
+        );
 
-        let runner = ManagerRunner {
-            tasks: DashMap::new(),
-            queue: Arc::new(RwLock::new(TaskQueue {})),
+        let runner = ManagerExecutor {
             command_rx,
             cancellation_token: CancellationToken::new(),
         };
@@ -39,6 +38,7 @@ impl TransferManager {
         ManagerHandle {
             manager,
             handle,
+            pool_handle,
         }
     }
 
@@ -68,25 +68,27 @@ impl TransferManager {
         reply_rx.await.map_err(|_| TransferError::ManagerShutdown)?
     }
 
-    pub async fn cancel_all(&self) {
-
-    }
+    pub async fn cancel_all(&self) {}
 }
 
 pub struct ManagerHandle {
-    manager: TransferManager,
-    handle: tokio::task::JoinHandle<()>,
+    pub pool_handle: tokio::task::JoinHandle<()>,
+    pub manager: TransferManager,
+    pub handle: tokio::task::JoinHandle<()>,
 }
 
 impl ManagerHandle {
     async fn shutdown(&self) {
         println!("Manager shutting down");
 
+        // 停止处理队列
+        self.handle.abort();
+        
         // 取消所有任务
         self.manager.cancel_all().await;
 
         // 等待 Runner 结束
-        self.handle.abort();
+        self.pool_handle.abort();
     }
 }
 
@@ -102,27 +104,19 @@ enum ManagerCommand {
     }
 }
 
-pub struct ManagerRunner {
-    tasks: DashMap<TransferId, TransferTask>,
-    queue: Arc<RwLock<TaskQueue>>,
+pub struct ManagerExecutor {
     command_rx: mpsc::UnboundedReceiver<ManagerCommand>,
     cancellation_token: CancellationToken,
 }
 
-impl ManagerRunner {
+impl ManagerExecutor {
     async fn run(mut self) {
         loop {
-            select! {
+            tokio::select! {
                 // 处理命令
                 Some(command) = self.command_rx.recv() => {
-                    self.handle_command(command).await;
+                    self.handle_command(command);
                 }
-
-                // 定时检查任务
-                _ = sleep(Duration::from_millis(1000)) => {
-                    self.check_queue().await;
-                }
-
                 // 取消信号
                 _ = self.cancellation_token.cancelled() => {
                     break;
@@ -131,33 +125,64 @@ impl ManagerRunner {
         }
     }
 
-    async fn check_queue(&self) {
-
-    }
-
-    async fn handle_command(&self, command: ManagerCommand) {
+    fn handle_command(&self, command: ManagerCommand) {
         match command {
             ManagerCommand::AddTask { builder, reply } => {
                 let result = self.add_task(builder);
                 let _ = reply.send(result);
             }
             ManagerCommand::PauseTask { id, reply } => {
-                let result = self.pause_task(id).await;
+                let result = self.pause_task(id);
                 let _ = reply.send(result);
             }
         }
     }
 
     fn add_task(&self, builder: Box<dyn TransferTaskBuilder>) -> Result<TransferId> {
-        builder.build_protocol();
+        let context = builder.build_context();
+        let protocol = builder.build_protocol();
+
         Ok(TransferId::new())
     }
 
-    async fn pause_task(&self, id: TransferId) -> Result<()> {
+    fn pause_task(&self, id: TransferId) -> Result<()> {
         Ok(())
     }
 }
 
-struct TaskQueue {
+pub struct WorkerPool {
+    config: TransferConfig,
+    tasks: Arc<RwLock<DashMap<TransferId, tokio::task::JoinHandle<()>>>>,
+    semaphore: Arc<Semaphore>,
+}
 
+impl WorkerPool {
+    pub fn new(config: TransferConfig) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(config.concurrent)),
+            tasks: Arc::new(RwLock::new(DashMap::new())),
+            config,
+        }
+    }
+
+    pub async fn start(mut self) {
+        loop {
+            let semaphore = self.semaphore.clone();
+            let permit = semaphore.acquire_owned().await.unwrap();
+            
+            let id = TransferId::new();
+            
+            let id_clone = id.clone();
+            let tasks_clone = self.tasks.clone();
+            let handle = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                drop(permit);
+                tasks_clone.write().await.remove(&id_clone);
+            });
+            
+            self.tasks.write().await.insert(id, handle);
+        }
+    }
+
+    
 }

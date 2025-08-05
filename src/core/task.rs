@@ -1,5 +1,8 @@
-use super::traits::TransferProtocol;
+use super::types::{TransferId};
+use super::traits::{TransferProtocol, TransferContext};
 
 pub struct TransferTask {
-    protocol: Box<dyn TransferProtocol>
+    id: TransferId,
+    protocol: Box<dyn TransferProtocol>,
+    context: TransferContext,
 }

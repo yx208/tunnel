@@ -3,9 +3,15 @@ use async_trait::async_trait;
 use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
-use crate::core::{TransferProtocol, TransferTaskBuilder, Result};
-use crate::TransferError;
-use super::types::TusConfig;
+
+use super::types::{TusConfig, TusProtocolOptions};
+use crate::core::{
+    Result,
+    TransferProtocol,
+    TransferTaskBuilder,
+    TransferContext,
+    TransferError
+};
 
 pub struct TusProtocol {
     config: TusConfig,
@@ -16,7 +22,7 @@ impl TusProtocol {
     pub fn new(config: TusConfig) -> Self {
         Self {
             config,
-            client: Client::new(),
+            client: Client::new()
         }
     }
 
@@ -66,7 +72,6 @@ impl TusProtocol {
         Ok(headers)
     }
 
-    /// 确保 location 是一个完整的 URL
     fn ensure_location_complete(&self, location: &str) -> Result<String> {
         if location.starts_with("http") {
             Ok(location.to_string())
@@ -111,20 +116,48 @@ impl TusProtocol {
         Ok(offset)
     }
 
-
 }
 
 #[async_trait]
 impl TransferProtocol for TusProtocol {
-    async fn pause(&self) -> Result<()> {
-        Ok(())
+    async fn initialize(&self, ctx: &mut TransferContext) -> Result<()> {
+        todo!()
+    }
+
+    async fn cancel(&self, ctx: &mut TransferContext) -> Result<()> {
+        todo!()
+    }
+
+    async fn finalize(&self, ctx: &mut TransferContext) -> Result<()> {
+        todo!()
     }
 }
 
-pub struct TusTaskBuilder {}
+pub struct TusTaskBuilder {
+    config: TusConfig,
+    options: Option<TusProtocolOptions>,
+    source: String,
+}
+
+impl TusTaskBuilder {
+    pub fn new(endpoint: String, source: String) -> Self {
+        let mut config = TusConfig::default();
+        config.endpoint = endpoint;
+
+        Self {
+            config,
+            source,
+            options: None,
+        }
+    }
+}
 
 impl TransferTaskBuilder for TusTaskBuilder {
     fn build_protocol(&self) -> Box<dyn TransferProtocol> {
+        Box::new(TusProtocol::new(self.config.clone()))
+    }
+
+    fn build_context(&self) -> TransferContext {
         todo!()
     }
 }

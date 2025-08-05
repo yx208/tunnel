@@ -2,7 +2,7 @@
 
 mod core;
 mod tus;
-mod config;
+pub mod config;
 
 pub use core::*;
 pub use tus::*;
