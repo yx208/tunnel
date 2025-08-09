@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, broadcast, Semaphore};
+use tokio::sync::{mpsc, oneshot, broadcast, Semaphore, RwLock};
 use tokio_util::sync::CancellationToken;
-use crate::{TransferConfig, TransferTask, WorkerPool};
-use crate::core::worker::TaskQueue;
+use crate::{TransferConfig, TransferTask};
 use super::traits::TransferTaskBuilder;
 use super::types::TransferId;
 use super::errors::{Result, TransferError};
@@ -16,32 +16,33 @@ impl TransferManager {
     pub fn new(config: TransferConfig) -> ManagerHandle {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, _) = broadcast::channel(128);
-        let (task_tx, task_rx) = mpsc::channel(64);
-
-        let cancellation_token = CancellationToken::new();
-        let semaphore = Arc::new(Semaphore::new(config.concurrent));
+        let (worker_tx, worker_rx) = mpsc::unbounded_channel();
 
         let manager = Self {
             command_tx,
             event_tx,
         };
 
-        let pool_handle = tokio::spawn(
-            WorkerPool::new(semaphore.clone()).start(task_rx)
-        );
+        let worker_pool = WorkerPool::new(config.concurrent);
+        let worker_handle = tokio::spawn(worker_pool.run(worker_rx));
 
-        let runner = ManagerExecutor {
-            command_rx,
-            cancellation_token,
-            queue: TaskQueue::new(semaphore, task_tx),
+        let inner = ManagerInner {
+            semaphore: Arc::new(Semaphore::new(config.concurrent)),
+            tasks: Arc::new(RwLock::new(Vec::new())),
+            active_tasks: Vec::new(),
+            config,
         };
 
+        let runner = ManagerExecutor {
+            inner,
+            command_rx,
+            cancellation_token: CancellationToken::new(),
+        };
         let handle = tokio::spawn(runner.run());
 
         ManagerHandle {
             manager,
             handle,
-            pool_handle,
         }
     }
 
@@ -75,7 +76,6 @@ impl TransferManager {
 }
 
 pub struct ManagerHandle {
-    pub pool_handle: tokio::task::JoinHandle<()>,
     pub manager: TransferManager,
     pub handle: tokio::task::JoinHandle<()>,
 }
@@ -89,9 +89,6 @@ impl ManagerHandle {
 
         // 取消所有任务
         self.manager.cancel_all().await;
-
-        // 等待 Runner 结束
-        self.pool_handle.abort();
     }
 }
 
@@ -107,10 +104,17 @@ enum ManagerCommand {
     }
 }
 
+struct ManagerInner {
+    config: TransferConfig,
+    semaphore: Arc<Semaphore>,
+    tasks: Arc<RwLock<Vec<TransferTask>>>,
+    active_tasks: Vec<TransferId>,
+}
+
 pub struct ManagerExecutor {
+    inner: ManagerInner,
     command_rx: mpsc::UnboundedReceiver<ManagerCommand>,
     cancellation_token: CancellationToken,
-    queue: TaskQueue,
 }
 
 impl ManagerExecutor {
@@ -152,13 +156,64 @@ impl ManagerExecutor {
             context,
             protocol: Arc::new(protocol),
         };
-        
-        self.queue.push(task).await;
-        
+
+        {
+            let mut guard = self.inner.tasks.write().await;
+            guard.push(task);
+        }
+
+        // 有可用线程
+        if self.inner.semaphore.available_permits() != 0 {
+            // self.worker_tx.send(task);
+        }
+
         Ok(id)
     }
 
     fn pause_task(&self, id: TransferId) -> Result<()> {
         Ok(())
     }
+
+    fn cancel_task(&self) -> Result<()> {
+        Ok(())
+    }
 }
+
+struct WorkerTask {
+    task: TransferTask,
+    completion_tx: oneshot::Sender<()>,
+}
+
+struct WorkerPool {
+    workers: Vec<WorkerTask>
+}
+
+impl WorkerPool {
+    fn new(size: usize) -> Self {
+        Self { workers: Vec::with_capacity(size) }
+    }
+
+    async fn run(mut self, mut worker_rx: mpsc::UnboundedReceiver<WorkerTask>) {
+        while let Some(worker_task) = worker_rx.recv().await {
+            println!("Worker task received");
+        }
+    }
+
+    async fn shutdown(&self) {
+        for worker in &self.workers {
+            // worker.abort();
+        }
+    }
+}
+
+/*
+worker
+    + notify
+    + worker_threads
+
+    # add -> trigger
+    #
+
+
+ */
+
