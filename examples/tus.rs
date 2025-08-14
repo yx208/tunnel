@@ -54,7 +54,7 @@ async fn test_upload() {
     let mut progress_receiver = aggregator.subscribe();
     tokio::spawn(async move {
         while let Ok(stats_vec) = progress_receiver.recv().await {
-            println!("{:?}", stats_vec);
+            println!("{:#?}", stats_vec);
         }
     });
     

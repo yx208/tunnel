@@ -138,7 +138,7 @@ async fn report_speed(aggregator: ProgressAggregator) {
                     stats_vec.push((item.0.clone(), stats));
                 }
                 
-                let _ = aggregator.stats_notify.send(Vec::new());
+                let _ = aggregator.stats_notify.send(stats_vec);
             }
         }
     }
