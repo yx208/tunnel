@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use reqwest::Client;
 use tokio_util::sync::CancellationToken;
+
 use tunnel::config::get_config;
 use tunnel::{Result, TransferId};
-use tunnel::refactor::{
-    tus::{
-        TusConfig,
-        TransferContext,
-        TusProtocol,
-    },
-    progress::ProgressAggregator,
+use tunnel::progress::ProgressAggregator;
+use tunnel::tus::{
+    TransferContext,
+    TusConfig,
+    TusProtocol,
 };
+
 #[tokio::main]
 async fn main() {
     test_upload().await;
@@ -57,7 +57,7 @@ async fn test_upload() {
             println!("{:#?}", stats_vec);
         }
     });
-    
+
     let id = TransferId::new();
     let sender = aggregator.registry_task(id.clone()).await;
 

@@ -8,7 +8,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
 use crate::core::{Result, TransferError};
-use super::progress::FileStream;
+use crate::progress::FileStream;
 
 #[derive(Debug, Clone)]
 pub struct TusConfig {

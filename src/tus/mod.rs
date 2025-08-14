@@ -1,6 +1,3 @@
-mod types;
-mod upload;
+mod tus;
 
-pub use types::TusConfig;
-pub use upload::{TusProtocol, TusTaskBuilder};
-
+pub use tus::*;
