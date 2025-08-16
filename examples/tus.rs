@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use reqwest::Client;
 use tokio_util::sync::CancellationToken;
 
 use tunnel::config::get_config;
@@ -12,21 +11,28 @@ use tunnel::tus::{
 };
 
 #[tokio::main]
-async fn main() {
-    test_upload().await;
-}
+async fn main() -> Result<()> {
+    let local_config = get_config();
+    let tus_config = create_tus_config();
 
-async fn build_context(config: &TusConfig, size: u64) -> Result<TransferContext> {
-    let client = Client::new();
-    let upload_url = TusProtocol::create_upload(client.clone(), config.clone(), size).await?;
-    let offset = TusProtocol::get_upload_offset(client, config.clone(), &upload_url).await?;
+    let mut context = TransferContext::new(local_config.file_path);
+    let aggregator = create_aggregator();
 
-    Ok(TransferContext {
-        destination: upload_url,
-        source: "".to_string(),
-        total_bytes: size,
-        transferred_bytes: offset,
-    })
+    let id = TransferId::new();
+    let sender = aggregator.registry_task(id.clone()).await;
+
+    let protocol = TusProtocol::new(tus_config);
+    protocol.initialize(&mut context).await?;
+    match protocol.stream_upload(context, Some(sender)).await {
+        Ok(_) => {
+            println!("Stream upload successful");
+        }
+        Err(e) => {
+            println!("Upload error: {:?}", e);
+        },
+    }
+
+    Ok(())
 }
 
 fn create_tus_config() -> TusConfig {
@@ -41,33 +47,23 @@ fn create_tus_config() -> TusConfig {
     }
 }
 
-async fn test_upload() {
-    let local_config = get_config();
-    let tus_config = create_tus_config();
-
-    let file = tokio::fs::File::open(local_config.file_path).await.unwrap();
-    let metadata = file.metadata().await.unwrap();
-    let context = build_context(&tus_config, metadata.len()).await.unwrap();
-
+fn create_aggregator() -> ProgressAggregator {
     let cancellation_token = CancellationToken::new();
     let aggregator = ProgressAggregator::new(cancellation_token.clone(), true);
+    
     let mut progress_receiver = aggregator.subscribe();
     tokio::spawn(async move {
         while let Ok(stats_vec) = progress_receiver.recv().await {
-            println!("{:#?}", stats_vec);
+            for item in stats_vec {
+                println!(
+                    "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
+                    item.1.instant_speed / 1024.0 / 1024.0,
+                    item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
+                    item.1.total_bytes as f64 / 1024.0 / 1024.0
+                );
+            }
         }
     });
 
-    let id = TransferId::new();
-    let sender = aggregator.registry_task(id.clone()).await;
-
-    let protocol = TusProtocol::new(tus_config);
-    match protocol.stream_upload(file, context, Some(sender)).await {
-        Ok(_) => {
-            println!("Stream upload successful");
-        }
-        Err(e) => {
-            println!("Upload error: {:?}", e);
-        },
-    }
+    aggregator
 }

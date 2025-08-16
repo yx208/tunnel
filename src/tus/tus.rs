@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::str::FromStr;
-use futures_util::Stream;
 use tokio::sync::mpsc;
 use tokio_util::io::ReaderStream;
 use reqwest::Client;
@@ -20,26 +19,32 @@ pub struct TusConfig {
 pub struct TusProtocol {
     config: TusConfig,
     client: Client,
-    context: Option<TransferContext>,
 }
 
 impl TusProtocol {
     pub fn new(config: TusConfig) -> Self {
         Self {
             config,
-            context: None,
             client: Client::new(),
         }
     }
+    
+    pub async fn initialize(&self, context: &mut TransferContext) -> Result<()> {
+        let file_size = std::fs::metadata(&context.source)?.len();
+        let upload_url = self.create_upload(file_size).await?;
+        let offset = self.get_upload_offset(&upload_url).await?;
+        
+        context.destination = upload_url;
+        context.transferred_bytes = offset;
+        context.total_bytes = file_size;
+        
+        Ok(())
+    }
 
-    pub async fn create_upload(
-        client: Client,
-        config: TusConfig,
-        length: u64
-    ) -> Result<String> {
-        let headers = TusProtocol::create_header_map(&config.headers)?;
-        let response = client
-            .post(&config.endpoint)
+    pub async fn create_upload(&self, length: u64) -> Result<String> {
+        let headers = self.create_header_map()?;
+        let response = self.client
+            .post(&self.config.endpoint)
             .header("Tus-Resumable", "1.0.0")
             .header("Upload-Length", length)
             .headers(headers)
@@ -66,15 +71,15 @@ impl TusProtocol {
         if location.starts_with("http") {
             Ok(location.to_string())
         } else {
-            let base_url = Url::parse(&config.endpoint)?;
+            let base_url = Url::parse(&self.config.endpoint)?;
             let final_url = base_url.join(location)?;
             Ok(final_url.to_string())
         }
     }
 
-    fn create_header_map(header_map: &HashMap<String, String>) -> Result<HeaderMap> {
+    fn create_header_map(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        for (k, v) in header_map {
+        for (k, v) in &self.config.headers {
             headers.insert(
                 HeaderName::from_str(&k)?,
                 HeaderValue::from_str(&v)?
@@ -84,19 +89,15 @@ impl TusProtocol {
         Ok(headers)
     }
 
-    pub async fn get_upload_offset(
-        client: Client,
-        config: TusConfig,
-        upload_url: &str
-    ) -> Result<u64> {
-        let headers = TusProtocol::create_header_map(&config.headers)?;
-        let response = client
+    pub async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
+        let headers = self.create_header_map()?;
+        let response = self.client
             .head(upload_url)
             .header("Tus-Resumable", "1.0.0")
             .headers(headers)
             .send()
             .await?;
-
+        
         if !response.status().is_success() {
             return Err(TransferError::protocol_specific(
                 "TUS",
@@ -124,7 +125,6 @@ impl TusProtocol {
 
     pub async fn stream_upload(
         &self,
-        file: tokio::fs::File,
         ctx: TransferContext,
         progress_tx: Option<mpsc::UnboundedSender<u64>>
     ) -> Result<()> {
@@ -136,7 +136,8 @@ impl TusProtocol {
             );
         }
 
-        let reader_stream = ReaderStream::with_capacity(file, 1024 * 1024 * 2);
+        let file = tokio::fs::File::open(&ctx.source).await?;
+        let reader_stream = ReaderStream::new(file);
         let stream = reqwest::Body::wrap_stream(FileStream::new(reader_stream, progress_tx));
         let response = self.client
             .patch(ctx.destination)
@@ -162,4 +163,15 @@ pub struct TransferContext {
     pub source: String,
     pub total_bytes: u64,
     pub transferred_bytes: u64,
+}
+
+impl TransferContext {
+    pub fn new(source: String) -> Self {
+        Self {
+            source,
+            destination: String::new(),
+            total_bytes: 0,
+            transferred_bytes: 0,
+        }
+    }
 }

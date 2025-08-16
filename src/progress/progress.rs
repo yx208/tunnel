@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -47,37 +47,79 @@ where
 }
 
 struct TaskProgress {
+    samples: VecDeque<(u64, Instant)>,
+    max_samples: usize,
+    window_time: Duration,
     bytes_transferred: u64,
     total_bytes: u64,
+    bytes_last_update: Instant,
     start_time: Instant,
     last_update: Instant,
 }
 
 impl Default for TaskProgress {
     fn default() -> Self {
+        let now = Instant::now();
         Self {
             bytes_transferred: 0,
             total_bytes: 0,
-            start_time: Instant::now(),
-            last_update: Instant::now(),
+            window_time: Duration::from_secs(5),
+            samples: VecDeque::with_capacity(5),
+            max_samples: 5,
+            bytes_last_update: now.clone(),
+            start_time: now.clone(),
+            last_update: now,
         }
     }
 }
 
 impl TaskProgress {
     fn update(&mut self, bytes: u64) {
-        self.last_update = Instant::now();
+        let now = Instant::now();
         self.bytes_transferred += bytes;
+
+        // 小于一秒不更新
+        if now.duration_since(self.last_update).as_secs_f64() < 1.0 {
+            self.bytes_last_update = now;
+            return;
+        }
+
+        self.samples.push_back((self.bytes_transferred, now));
+        if self.samples.len() > self.max_samples {
+            self.samples.pop_front();
+        }
+
+        let cutoff = now - self.window_time;
+        self.samples.retain(|(_, t)| *t > cutoff);
+        self.last_update = now;
+        self.bytes_last_update = now;
     }
 
     pub async fn get_stats(&self) -> TransferStats {
+        let instant_speed = if self.samples.len() < 2 {
+            0.0
+        } else {
+            let (first_bytes, first_time) = self.samples.front().unwrap();
+            let (last_bytes, last_time) = self.samples.back().unwrap();
+
+            let bytes_diff = last_bytes.saturating_sub(*first_bytes);
+            let time_diff = last_time.duration_since(*first_time).as_secs_f64();
+
+            if time_diff > 0.0 {
+                bytes_diff as f64 / time_diff
+            } else {
+                0.0
+            }
+        };
+        let average_speed = self.bytes_transferred as f64 / self.start_time.elapsed().as_secs_f64();
+
         TransferStats {
             start_time: self.start_time.clone(),
             end_time: None,
             bytes_transferred: self.bytes_transferred,
             total_bytes: self.total_bytes,
-            current_speed: 0.0,
-            average_speed: 0.0,
+            instant_speed,
+            average_speed,
             eta: None,
         }
     }
@@ -85,13 +127,13 @@ impl TaskProgress {
 
 #[derive(Clone, Debug)]
 pub struct TransferStats {
-    start_time: Instant,
-    end_time: Option<Instant>,
-    bytes_transferred: u64,
-    total_bytes: u64,
-    current_speed: f64,
-    average_speed: f64,
-    eta: Option<Duration>,
+    pub start_time: Instant,
+    pub end_time: Option<Instant>,
+    pub bytes_transferred: u64,
+    pub total_bytes: u64,
+    pub instant_speed: f64,
+    pub average_speed: f64,
+    pub eta: Option<Duration>,
 }
 
 struct SpeedTrackerHandle {
@@ -187,10 +229,3 @@ impl ProgressAggregator {
         self.stats_notify.subscribe()
     }
 }
-
-
-
-
-
-
-
