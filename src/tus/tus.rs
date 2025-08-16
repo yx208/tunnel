@@ -123,7 +123,7 @@ impl TusProtocol {
         Ok(offset)
     }
 
-    pub async fn stream_upload(
+    pub async fn execute(
         &self,
         ctx: TransferContext,
         progress_tx: Option<mpsc::UnboundedSender<u64>>

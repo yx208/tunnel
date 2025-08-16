@@ -23,15 +23,8 @@ async fn main() -> Result<()> {
 
     let protocol = TusProtocol::new(tus_config);
     protocol.initialize(&mut context).await?;
-    match protocol.stream_upload(context, Some(sender)).await {
-        Ok(_) => {
-            aggregator.unregister_task(id).await;
-            println!("Stream upload successful");
-        }
-        Err(e) => {
-            println!("Upload error: {:?}", e);
-        },
-    }
+    protocol.execute(context, Some(sender)).await?;
+    aggregator.unregister_task(id).await;
     
     let handle = tokio::spawn(async move {
         loop {
