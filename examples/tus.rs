@@ -25,12 +25,21 @@ async fn main() -> Result<()> {
     protocol.initialize(&mut context).await?;
     match protocol.stream_upload(context, Some(sender)).await {
         Ok(_) => {
+            aggregator.unregister_task(id).await;
             println!("Stream upload successful");
         }
         Err(e) => {
             println!("Upload error: {:?}", e);
         },
     }
+    
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    });
+    
+    let _ = tokio::join!(handle);
 
     Ok(())
 }
@@ -54,13 +63,17 @@ fn create_aggregator() -> ProgressAggregator {
     let mut progress_receiver = aggregator.subscribe();
     tokio::spawn(async move {
         while let Ok(stats_vec) = progress_receiver.recv().await {
-            for item in stats_vec {
-                println!(
-                    "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
-                    item.1.instant_speed / 1024.0 / 1024.0,
-                    item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
-                    item.1.total_bytes as f64 / 1024.0 / 1024.0
-                );
+            if stats_vec.len() > 0 {
+                for item in stats_vec {
+                    println!(
+                        "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
+                        item.1.instant_speed / 1024.0 / 1024.0,
+                        item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
+                        item.1.total_bytes as f64 / 1024.0 / 1024.0
+                    );
+                }
+            } else {
+                println!("No stats");
             }
         }
     });
