@@ -57,12 +57,12 @@ struct TaskProgress {
     last_update: Instant,
 }
 
-impl Default for TaskProgress {
-    fn default() -> Self {
+impl TaskProgress {
+    pub fn new(total_bytes: u64) -> Self {
         let now = Instant::now();
         Self {
             bytes_transferred: 0,
-            total_bytes: 0,
+            total_bytes: total_bytes,
             window_time: Duration::from_secs(5),
             samples: VecDeque::with_capacity(5),
             max_samples: 5,
@@ -71,9 +71,7 @@ impl Default for TaskProgress {
             last_update: now,
         }
     }
-}
 
-impl TaskProgress {
     fn update(&mut self, bytes: u64) {
         let now = Instant::now();
         self.bytes_transferred += bytes;
@@ -136,14 +134,14 @@ pub struct TransferStats {
     pub eta: Option<Duration>,
 }
 
-struct SpeedTrackerHandle {
+pub struct SpeedTracker {
     tracker: Arc<Mutex<TaskProgress>>,
     handle: tokio::task::JoinHandle<()>,
 }
 
-impl SpeedTrackerHandle {
-    pub fn new(mut progress_rx: mpsc::UnboundedReceiver<u64>) -> SpeedTrackerHandle {
-        let tracker = Arc::new(Mutex::new(TaskProgress::default()));
+impl SpeedTracker {
+    pub fn new(mut progress_rx: mpsc::UnboundedReceiver<u64>) -> SpeedTracker {
+        let tracker = Arc::new(Mutex::new(TaskProgress::new(0)));
 
         let tracker_clone = tracker.clone();
         let handle = tokio::spawn(async move {
@@ -153,7 +151,7 @@ impl SpeedTrackerHandle {
             }
         });
 
-        SpeedTrackerHandle {
+        SpeedTracker {
             tracker,
             handle
         }
@@ -188,7 +186,7 @@ async fn report_speed(aggregator: ProgressAggregator) {
 
 #[derive(Clone)]
 pub struct ProgressAggregator {
-    progress_tracker: Arc<RwLock<HashMap<TransferId, SpeedTrackerHandle>>>,
+    progress_tracker: Arc<RwLock<HashMap<TransferId, SpeedTracker>>>,
     cancellation_token: CancellationToken,
     stats_notify: broadcast::Sender<Vec<(TransferId, TransferStats)>>,
 }
@@ -210,11 +208,12 @@ impl ProgressAggregator {
         aggregator
     }
 
-    pub async fn registry_task(&self, transfer_id: TransferId) -> mpsc::UnboundedSender<u64> {
-        let mut guard = self.progress_tracker.write().await;
+    pub async fn registry_task(&self, id: TransferId) -> mpsc::UnboundedSender<u64> {
         let (progress_tx, progress_rx) = mpsc::unbounded_channel();
-        guard.insert(transfer_id, SpeedTrackerHandle::new(progress_rx));
-
+        let tracker = SpeedTracker::new(progress_rx);
+        let mut guard = self.progress_tracker.write().await;
+        guard.insert(id, tracker);
+        
         progress_tx
     }
 

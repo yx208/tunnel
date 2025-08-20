@@ -1,19 +1,36 @@
 use std::collections::HashMap;
 use std::str::FromStr;
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio_util::io::ReaderStream;
 use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
-use crate::core::{Result, TransferError};
+use crate::core::{
+    Result,
+    TransferError,
+    TransferContext,
+    TransferProtocolBuilder,
+};
 use crate::progress::FileStream;
+use crate::{TransferConfig, TransferProtocol};
 
 #[derive(Debug, Clone)]
 pub struct TusConfig {
     pub endpoint: String,
     pub buffer_size: usize,
     pub headers: HashMap<String, String>,
+}
+
+impl TusConfig {
+    pub fn new(endpoint: String) -> Self {
+        Self {
+            endpoint,
+            buffer_size: 1024 * 1024 * 2,
+            headers: HashMap::new(),
+        }
+    }
 }
 
 pub struct TusProtocol {
@@ -28,20 +45,8 @@ impl TusProtocol {
             client: Client::new(),
         }
     }
-    
-    pub async fn initialize(&self, context: &mut TransferContext) -> Result<()> {
-        let file_size = std::fs::metadata(&context.source)?.len();
-        let upload_url = self.create_upload(file_size).await?;
-        let offset = self.get_upload_offset(&upload_url).await?;
-        
-        context.destination = upload_url;
-        context.transferred_bytes = offset;
-        context.total_bytes = file_size;
-        
-        Ok(())
-    }
 
-    pub async fn create_upload(&self, length: u64) -> Result<String> {
+    async fn create_upload(&self, length: u64) -> Result<String> {
         let headers = self.create_header_map()?;
         let response = self.client
             .post(&self.config.endpoint)
@@ -89,7 +94,7 @@ impl TusProtocol {
         Ok(headers)
     }
 
-    pub async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
+    async fn get_upload_offset(&self, upload_url: &str) -> Result<u64> {
         let headers = self.create_header_map()?;
         let response = self.client
             .head(upload_url)
@@ -122,10 +127,25 @@ impl TusProtocol {
 
         Ok(offset)
     }
+}
 
-    pub async fn execute(
+#[async_trait]
+impl TransferProtocol for TusProtocol {
+    async fn initialize(&self, context: &mut TransferContext) -> Result<()> {
+        let file_size = std::fs::metadata(&context.source)?.len();
+        let upload_url = self.create_upload(file_size).await?;
+        let offset = self.get_upload_offset(&upload_url).await?;
+
+        context.destination = upload_url;
+        context.transferred_bytes = offset;
+        context.total_bytes = file_size;
+
+        Ok(())
+    }
+
+    async fn execute(
         &self,
-        ctx: TransferContext,
+        ctx: &TransferContext,
         progress_tx: Option<mpsc::UnboundedSender<u64>>
     ) -> Result<()> {
         let mut headers = HeaderMap::new();
@@ -140,7 +160,7 @@ impl TusProtocol {
         let reader_stream = ReaderStream::new(file);
         let stream = reqwest::Body::wrap_stream(FileStream::new(reader_stream, progress_tx));
         let response = self.client
-            .patch(ctx.destination)
+            .patch(&ctx.destination)
             .headers(headers)
             .header("Tus-Resumable", "1.0.0")
             .header("Content-Type", "application/offset+octet-stream")
@@ -158,20 +178,30 @@ impl TusProtocol {
     }
 }
 
-pub struct TransferContext {
-    pub destination: String,
-    pub source: String,
-    pub total_bytes: u64,
-    pub transferred_bytes: u64,
+pub struct TusProtocolBuilder {
+    config: TransferConfig,
+    endpoint: String,
 }
 
-impl TransferContext {
-    pub fn new(source: String) -> Self {
-        Self {
-            source,
-            destination: String::new(),
-            total_bytes: 0,
-            transferred_bytes: 0,
-        }
+impl TusProtocolBuilder {
+    pub fn new(config: TransferConfig, endpoint: String) -> Self {
+        Self { config, endpoint }
     }
 }
+
+#[async_trait]
+impl TransferProtocolBuilder for TusProtocolBuilder {
+    async fn build_context(&self) -> TransferContext {
+        TransferContext::new(self.config.source.clone())
+    }
+
+    async fn build_protocol(&self) -> Box<dyn TransferProtocol> {
+        let config = TusConfig {
+            endpoint: self.endpoint.clone(),
+            headers: self.config.headers.clone(),
+            buffer_size: 1024 * 1024 * 2,
+        };
+        Box::new(TusProtocol::new(config))
+    }
+}
+

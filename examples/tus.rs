@@ -2,51 +2,39 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 use tunnel::config::get_config;
-use tunnel::{Result, TransferId};
-use tunnel::progress::ProgressAggregator;
-use tunnel::tus::{
-    TransferContext,
-    TusConfig,
-    TusProtocol,
-};
+use tunnel::{Result, TransferConfig, TransferProtocolBuilder, TransferTask};
+use tunnel::progress::{ProgressAggregator};
+use tunnel::tus::{TusProtocolBuilder};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let local_config = get_config();
-    let tus_config = create_tus_config();
-
-    let mut context = TransferContext::new(local_config.file_path);
     let aggregator = create_aggregator();
 
-    let id = TransferId::new();
-    let sender = aggregator.registry_task(id.clone()).await;
+    let mut task = TransferTask::new();
+    let progress_tx = aggregator.registry_task(task.id.clone()).await;
+    task.start(create_tus_builder(), Some(progress_tx)).await?;
 
-    let protocol = TusProtocol::new(tus_config);
-    protocol.initialize(&mut context).await?;
-    protocol.execute(context, Some(sender)).await?;
-    aggregator.unregister_task(id).await;
-    
-    let handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        }
-    });
-    
-    let _ = tokio::join!(handle);
+    if task.handle.is_some() {
+        println!("task is already running");
+        let _ = tokio::join!(task.handle.unwrap());
+        println!("task is already completed");
+    }
 
     Ok(())
 }
 
-fn create_tus_config() -> TusConfig {
+fn create_tus_builder() -> impl TransferProtocolBuilder {
     let config = get_config();
     let mut headers = HashMap::new();
     headers.insert("Authorization".to_string(), config.token);
 
-    TusConfig {
-        endpoint: config.endpoint.clone(),
-        buffer_size: 1024 * 102 * 2,
-        headers
-    }
+    let transfer_config = TransferConfig {
+        headers,
+        source: config.file_path,
+    };
+    let builder = TusProtocolBuilder::new(transfer_config, config.endpoint);
+
+    builder
 }
 
 fn create_aggregator() -> ProgressAggregator {
