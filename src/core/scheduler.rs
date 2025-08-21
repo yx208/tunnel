@@ -23,7 +23,6 @@ struct TransferTask {
 }
 
 struct TaskManager {
-    task_tx: mpsc::UnboundedSender<TransferId>,
     completed_tx: mpsc::UnboundedSender<TransferId>,
     tasks: HashMap<TransferId, TransferTask>,
     running_tasks: HashMap<TransferId, JoinHandle<Result<()>>>,
@@ -35,10 +34,8 @@ impl TaskManager {
     fn new(
         semaphore: Arc<Semaphore>,
         completed_tx: mpsc::UnboundedSender<TransferId>,
-        task_tx: mpsc::UnboundedSender<TransferId>
     ) -> Self {
         Self {
-            task_tx,
             completed_tx,
             semaphore,
             running_tasks: HashMap::new(),
@@ -97,34 +94,23 @@ impl TaskManager {
 }
 
 struct TaskWorker {
-    task_rx: mpsc::UnboundedReceiver<TransferId>,
     completed_rx: mpsc::UnboundedReceiver<TransferId>,
     manager: Arc<RwLock<TaskManager>>,
 }
 
 impl TaskWorker {
     pub async fn run(mut self) {
-        loop {
-            tokio::select! {
-                result = self.task_rx.recv() => {
-                    if let Some(transfer_id) = result {
-                        let mut manager_guard = self.manager.write().await;
-                        manager_guard.execute(transfer_id).await;
-                    }
-                }
-                Some(transfer_id) = self.completed_rx.recv() => {
-                    println!("Task completed: {:?}", transfer_id);
+        while let Some(transfer_id) = self.completed_rx.recv().await {
+            println!("Task completed: {:?}", transfer_id);
 
-                    let mut manager_guard = self.manager.write().await;
-                    manager_guard.remove_running_task(transfer_id);
+            let mut manager_guard = self.manager.write().await;
+            manager_guard.remove_running_task(transfer_id);
 
-                    if manager_guard.has_next_task() {
-                        manager_guard.execute_next().await;
-                    } else {
-                        println!("All task completed");
-                        // todo!("Send task finished event");
-                    }
-                }
+            if manager_guard.has_next_task() {
+                manager_guard.execute_next().await;
+            } else {
+                println!("All task completed");
+                // todo!("Send task finished event");
             }
         }
     }
@@ -178,22 +164,16 @@ pub struct TunnelScheduler {
 impl TunnelScheduler {
     pub fn new() -> Self {
         let (completed_tx, completed_rx) = mpsc::unbounded_channel();
-        let (task_tx, task_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::channel(64);
 
         let manager = Arc::new(RwLock::new(
             TaskManager::new(
                 Arc::new(Semaphore::new(1)),
                 completed_tx,
-                task_tx
             )
         ));
 
-        let worker = TaskWorker {
-            manager: manager.clone(),
-            completed_rx,
-            task_rx,
-        };
+        let worker = TaskWorker { manager: manager.clone(), completed_rx, };
         let task_worker_handle = tokio::spawn(worker.run());
 
         let manager_worker = ManagerWorker {
