@@ -10,6 +10,7 @@ impl TransferId {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TransferConfig {
     pub source: String,
     pub headers: HashMap<String, String>,

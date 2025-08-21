@@ -178,6 +178,7 @@ impl TransferProtocol for TusProtocol {
     }
 }
 
+#[derive(Clone)]
 pub struct TusProtocolBuilder {
     config: TransferConfig,
     endpoint: String,

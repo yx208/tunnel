@@ -16,7 +16,7 @@ pub trait TransferProtocol: Send + 'static {
 }
 
 #[async_trait]
-pub trait TransferProtocolBuilder {
+pub trait TransferProtocolBuilder: Send + Sync + 'static {
     async fn build_context(&self) -> TransferContext;
     async fn build_protocol(&self) -> Box<dyn TransferProtocol>;
 }

@@ -2,24 +2,20 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 use tunnel::config::get_config;
-use tunnel::{Result, TransferConfig, TransferProtocolBuilder, TransferTask};
+use tunnel::{Result, TransferConfig, TransferProtocolBuilder};
 use tunnel::progress::{ProgressAggregator};
+use tunnel::scheduler::TunnelScheduler;
 use tunnel::tus::{TusProtocolBuilder};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let aggregator = create_aggregator();
+    let scheduler = TunnelScheduler::new();
+    scheduler.add_task(Box::new(create_tus_builder())).await?;
+    scheduler.add_task(Box::new(create_tus_builder())).await?;
+    scheduler.add_task(Box::new(create_tus_builder())).await?;
 
-    let mut task = TransferTask::new();
-    let progress_tx = aggregator.registry_task(task.id.clone()).await;
-    task.start(create_tus_builder(), Some(progress_tx)).await?;
-
-    if task.handle.is_some() {
-        println!("task is already running");
-        let _ = tokio::join!(task.handle.unwrap());
-        println!("task is already completed");
-    }
-
+    run().await;
+    
     Ok(())
 }
 
@@ -60,4 +56,10 @@ fn create_aggregator() -> ProgressAggregator {
     });
 
     aggregator
+}
+
+async fn run() {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    }
 }

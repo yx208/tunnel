@@ -3,12 +3,12 @@ use tokio::sync::mpsc;
 use crate::{TransferId, TransferProtocolBuilder};
 use super::errors::Result;
 
-pub struct TransferTask {
+pub struct TaskWorker {
     pub id: TransferId,
-    pub handle: Option<tokio::task::JoinHandle<()>>,
+    pub handle: Option<tokio::task::JoinHandle<Result<()>>>,
 }
 
-impl TransferTask {
+impl TaskWorker {
     pub fn new() -> Self {
         Self {
             id: TransferId::new(),
@@ -26,7 +26,7 @@ impl TransferTask {
 
         protocol.initialize(&mut context).await?;
         let handle = tokio::spawn(async move {
-            let result = protocol.execute(&context, progress_tx).await;
+            protocol.execute(&context, progress_tx).await
         });
 
         self.handle = Some(handle);
