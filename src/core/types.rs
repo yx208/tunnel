@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use serde_json::ser::State;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -32,6 +33,58 @@ impl TransferContext {
             total_bytes: 0,
             transferred_bytes: 0,
         }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransferState {
+    Queued,
+    Preparing,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl TransferState {
+    pub fn can_to(&self, state: &TransferState) -> bool {
+        match (self, state)  {
+            (TransferState::Queued, _) => true,
+
+            (TransferState::Preparing, TransferState::Queued) => false,
+            (TransferState::Preparing, _) => true,
+
+            (TransferState::Running, _) => true,
+
+            _ => false
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TransferEvent {
+    StateChanged {
+        id: TransferId,
+        old_state: TransferState,
+        new_state: TransferState,
+    },
+
+    Started {
+        id: TransferId,
+    },
+
+    Completed {
+        id: TransferId,
+    },
+
+    Failed {
+        id: TransferId,
+        reason: String,
+    },
+
+    Cancelled {
+        id: TransferId,
     }
 }
 

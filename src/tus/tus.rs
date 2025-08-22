@@ -190,13 +190,12 @@ impl TusProtocolBuilder {
     }
 }
 
-#[async_trait]
 impl TransferProtocolBuilder for TusProtocolBuilder {
-    async fn build_context(&self) -> TransferContext {
+    fn build_context(&self) -> TransferContext {
         TransferContext::new(self.config.source.clone())
     }
 
-    async fn build_protocol(&self) -> Box<dyn TransferProtocol> {
+    fn build_protocol(&self) -> Box<dyn TransferProtocol> {
         let config = TusConfig {
             endpoint: self.endpoint.clone(),
             headers: self.config.headers.clone(),
