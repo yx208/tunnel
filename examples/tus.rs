@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
     scheduler.add_task(Box::new(create_tus_builder())).await?;
     scheduler.add_task(Box::new(create_tus_builder())).await?;
 
-    handle_transfer_event(scheduler.subscribe());
+    tokio::spawn(handle_transfer_event(scheduler.subscribe()));
 
     run().await;
     
@@ -33,28 +33,26 @@ fn create_tus_builder() -> impl TransferProtocolBuilder {
     builder
 }
 
-fn handle_transfer_event(mut event_tx: broadcast::Receiver<TransferEvent>) {
-    tokio::spawn(async move {
-        while let Ok(event) = event_tx.recv().await {
-            match event {
-                TransferEvent::Progress { updates } => {
-                    if updates.len() > 0 {
-                        for item in updates {
-                            println!(
-                                "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
-                                item.1.instant_speed / 1024.0 / 1024.0,
-                                item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
-                                item.1.total_bytes as f64 / 1024.0 / 1024.0
-                            );
-                        }
-                    } else {
-                        println!("No stats");
+async fn handle_transfer_event(mut event_tx: broadcast::Receiver<TransferEvent>) {
+    while let Ok(event) = event_tx.recv().await {
+        match event {
+            TransferEvent::Progress { updates } => {
+                if updates.len() > 0 {
+                    for item in updates {
+                        println!(
+                            "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
+                            item.1.instant_speed / 1024.0 / 1024.0,
+                            item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
+                            item.1.total_bytes as f64 / 1024.0 / 1024.0
+                        );
                     }
+                } else {
+                    println!("No stats");
                 }
-                _ => {}
             }
+            _ => {}
         }
-    });
+    }
 }
 
 async fn run() {
