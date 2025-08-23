@@ -11,7 +11,7 @@ pub trait TransferProtocol: Send + 'static {
     async fn execute(
         &self,
         ctx: &TransferContext,
-        progress_tx: Option<mpsc::UnboundedSender<u64>>
+        progress_tx: mpsc::UnboundedSender<u64>
     ) -> Result<()>;
 }
 

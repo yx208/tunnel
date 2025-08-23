@@ -7,20 +7,19 @@ use tokio::sync::{mpsc, Mutex, RwLock, broadcast};
 use bytes::Bytes;
 use futures::Stream;
 use pin_project_lite::pin_project;
-use tokio_util::sync::CancellationToken;
-use crate::TransferId;
+use crate::{TransferEvent, TransferId, TransferStats};
 
 pin_project! {
     pub struct FileStream<S> {
         #[pin]
         inner: S,
-        progress_tx: Option<mpsc::UnboundedSender<u64>>,
+        bytes_tx: mpsc::UnboundedSender<u64>,
     }
 }
 
 impl<S> FileStream<S> {
-    pub fn new(inner: S, progress_tx: Option<mpsc::UnboundedSender<u64>>) -> Self {
-        Self { inner, progress_tx }
+    pub fn new(inner: S, bytes_tx: mpsc::UnboundedSender<u64>) -> Self {
+        Self { inner, bytes_tx }
     }
 }
 
@@ -34,11 +33,7 @@ where
         let project = self.project();
         match project.inner.poll_next(cx) {
             Poll::Ready(Some(Ok(item))) => {
-                if let Some(tx) = project.progress_tx.as_ref() {
-                    let bytes_length = item.len();
-                    let _ = tx.send(bytes_length as u64);
-                }
-                
+                let _ = project.bytes_tx.send(item.len() as u64);
                 Poll::Ready(Some(Ok(item)))
             },
             other => other
@@ -62,7 +57,7 @@ impl TaskProgress {
         let now = Instant::now();
         Self {
             bytes_transferred: 0,
-            total_bytes: total_bytes,
+            total_bytes,
             window_time: Duration::from_secs(5),
             samples: VecDeque::with_capacity(5),
             max_samples: 5,
@@ -123,29 +118,18 @@ impl TaskProgress {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct TransferStats {
-    pub start_time: Instant,
-    pub end_time: Option<Instant>,
-    pub bytes_transferred: u64,
-    pub total_bytes: u64,
-    pub instant_speed: f64,
-    pub average_speed: f64,
-    pub eta: Option<Duration>,
-}
-
 pub struct SpeedTracker {
     tracker: Arc<Mutex<TaskProgress>>,
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl SpeedTracker {
-    pub fn new(mut progress_rx: mpsc::UnboundedReceiver<u64>) -> SpeedTracker {
+    pub fn new(mut bytes_rx: mpsc::UnboundedReceiver<u64>) -> SpeedTracker {
         let tracker = Arc::new(Mutex::new(TaskProgress::new(0)));
 
         let tracker_clone = tracker.clone();
         let handle = tokio::spawn(async move {
-            while let Some(bytes) = progress_rx.recv().await {
+            while let Some(bytes) = bytes_rx.recv().await {
                 let mut guard = tracker_clone.lock().await;
                 guard.update(bytes);
             }
@@ -162,69 +146,68 @@ impl SpeedTracker {
     }
 }
 
-async fn report_speed(aggregator: ProgressAggregator) {
-    loop {
-        tokio::select! {
-            _ = aggregator.cancellation_token.cancelled() => break,
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                let guard = aggregator.progress_tracker.read().await;
-                if guard.len() == 0 {
-                    continue;
-                }
-                
-                let mut stats_vec = Vec::new();
-                for item in guard.iter() {
-                    let stats = item.1.tracker.lock().await.get_stats().await;
-                    stats_vec.push((item.0.clone(), stats));
-                }
-                
-                let _ = aggregator.stats_notify.send(stats_vec);
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
 pub struct ProgressAggregator {
-    progress_tracker: Arc<RwLock<HashMap<TransferId, SpeedTracker>>>,
-    cancellation_token: CancellationToken,
-    stats_notify: broadcast::Sender<Vec<(TransferId, TransferStats)>>,
+    trackers: Arc<RwLock<HashMap<TransferId, SpeedTracker>>>,
+    event_tx: broadcast::Sender<TransferEvent>,
+    handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ProgressAggregator {
-    pub fn new(token: CancellationToken, enable_report: bool) -> Self {
-        let (stats_notify, _) = broadcast::channel(64);
-        
+    pub fn new(event_tx: broadcast::Sender<TransferEvent>) -> Self {
         let aggregator = Self {
-            progress_tracker: Arc::new(RwLock::new(HashMap::new())),
-            cancellation_token: token,
-            stats_notify
+            trackers: Arc::new(RwLock::new(HashMap::new())),
+            event_tx,
+            handle: None,
         };
-        
-        if enable_report {
-            tokio::spawn(report_speed(aggregator.clone()));
-        }
 
         aggregator
     }
 
-    pub async fn registry_task(&self, id: TransferId) -> mpsc::UnboundedSender<u64> {
-        let (progress_tx, progress_rx) = mpsc::unbounded_channel();
-        let tracker = SpeedTracker::new(progress_rx);
-        let mut guard = self.progress_tracker.write().await;
-        guard.insert(id, tracker);
-        
-        progress_tx
+    pub fn enable_report(mut self) -> Self {
+        let trackers = self.trackers.clone();
+        let event_tx = self.event_tx.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                let mut stats_vec = Vec::new();
+                let trackers_guard = trackers.read().await;
+                for item in trackers_guard.iter() {
+                    let stats = item.1.tracker.lock().await.get_stats().await;
+                    stats_vec.push((item.0.clone(), stats));
+                }
+                
+                let _ = event_tx.send(TransferEvent::Progress {
+                    updates: stats_vec
+                });
+            }
+        });
+
+        self.handle = Some(handle);
+
+        self
     }
 
-    pub async fn unregister_task(&self, transfer_id: TransferId) {
-        let mut guard = self.progress_tracker.write().await;
-        if let Some(handle) = guard.remove(&transfer_id) {
+    pub async fn registry_task(&self, id: TransferId, bytes_rx: mpsc::UnboundedReceiver<u64>) {
+        let tracker = SpeedTracker::new(bytes_rx);
+        let mut trackers_guard = self.trackers.write().await;
+        trackers_guard.insert(id, tracker);
+    }
+
+    pub async fn unregister_task(&self, transfer_id: &TransferId) {
+        let mut trackers_guard = self.trackers.write().await;
+        if let Some(handle) = trackers_guard.remove(transfer_id) {
             handle.cancel();
         }
     }
-    
-    pub fn subscribe(&self) -> broadcast::Receiver<Vec<(TransferId, TransferStats)>> {
-        self.stats_notify.subscribe()
+
+    pub async fn shutdown(&mut self) {
+        let handle = self.handle.take();
+        if let Some(handle) = handle {
+            handle.abort();
+        }
+
+        let mut trackers_guard = self.trackers.write().await;
+        trackers_guard.clear();
     }
 }

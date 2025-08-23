@@ -18,27 +18,14 @@ pub enum TaskExecuteInnerEvent {
     Failed { id: TransferId, reason: String },
 }
 
-#[derive(Clone)]
 pub struct TransferTask {
     pub id: TransferId,
     pub state: TransferState,
-    pub builder: Arc<Box<dyn TransferProtocolBuilder>>,
+    pub builder: Box<dyn TransferProtocolBuilder>,
+    pub bytes_tx: mpsc::UnboundedSender<u64>,
     pub created_at: Instant,
     pub started_at: Option<Instant>,
     pub completed_at: Option<Instant>,
-}
-
-impl TransferTask {
-    pub fn new(builder: Box<dyn TransferProtocolBuilder>) -> Self {
-        Self {
-            id: TransferId::new(),
-            state: TransferState::Queued,
-            builder: Arc::new(builder),
-            created_at: Instant::now(),
-            started_at: None,
-            completed_at: None,
-        }
-    }
 }
 
 struct TaskExecutor {
@@ -54,6 +41,7 @@ impl TaskExecutor {
 
         let mut context = task.builder.build_context();
         let protocol = task.builder.build_protocol();
+        let bytes_tx = task.bytes_tx.clone();
 
         tokio::spawn(async move {
             let _permit = match semaphore.acquire_owned().await {
@@ -81,7 +69,7 @@ impl TaskExecutor {
             }
 
             // Execute result
-            let execute_result = protocol.execute(&context, None).await;
+            let execute_result = protocol.execute(&context, bytes_tx).await;
             match execute_result {
                 Ok(_) => {
                     let _ = event_tx.send(TaskExecuteInnerEvent::Completed { id: task_id });

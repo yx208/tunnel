@@ -146,7 +146,7 @@ impl TransferProtocol for TusProtocol {
     async fn execute(
         &self,
         ctx: &TransferContext,
-        progress_tx: Option<mpsc::UnboundedSender<u64>>
+        progress_tx: mpsc::UnboundedSender<u64>
     ) -> Result<()> {
         let mut headers = HeaderMap::new();
         for (k, v) in &self.config.headers {

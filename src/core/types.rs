@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use serde_json::ser::State;
 use uuid::Uuid;
 
@@ -70,6 +71,10 @@ pub enum TransferEvent {
         new_state: TransferState,
     },
 
+    Progress {
+        updates: Vec<(TransferId, TransferStats)>,
+    },
+
     Started {
         id: TransferId,
     },
@@ -86,5 +91,16 @@ pub enum TransferEvent {
     Cancelled {
         id: TransferId,
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct TransferStats {
+    pub start_time: Instant,
+    pub end_time: Option<Instant>,
+    pub bytes_transferred: u64,
+    pub total_bytes: u64,
+    pub instant_speed: f64,
+    pub average_speed: f64,
+    pub eta: Option<Duration>,
 }
 

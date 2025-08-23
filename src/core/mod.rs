@@ -1,6 +1,5 @@
 mod types;
 mod errors;
-mod manager;
 mod traits;
 pub mod scheduler;
 mod tunnel;

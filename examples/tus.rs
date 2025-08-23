@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use tokio_util::sync::CancellationToken;
-
+use tokio::sync::broadcast;
 use tunnel::config::get_config;
-use tunnel::{Result, TransferConfig, TransferProtocolBuilder};
-use tunnel::progress::{ProgressAggregator};
+use tunnel::{Result, TransferConfig, TransferEvent, TransferProtocolBuilder};
 use tunnel::scheduler::TunnelScheduler;
 use tunnel::tus::{TusProtocolBuilder};
 
@@ -13,6 +11,8 @@ async fn main() -> Result<()> {
     scheduler.add_task(Box::new(create_tus_builder())).await?;
     scheduler.add_task(Box::new(create_tus_builder())).await?;
     scheduler.add_task(Box::new(create_tus_builder())).await?;
+
+    handle_transfer_event(scheduler.subscribe());
 
     run().await;
     
@@ -33,29 +33,28 @@ fn create_tus_builder() -> impl TransferProtocolBuilder {
     builder
 }
 
-fn create_aggregator() -> ProgressAggregator {
-    let cancellation_token = CancellationToken::new();
-    let aggregator = ProgressAggregator::new(cancellation_token.clone(), true);
-    
-    let mut progress_receiver = aggregator.subscribe();
+fn handle_transfer_event(mut event_tx: broadcast::Receiver<TransferEvent>) {
     tokio::spawn(async move {
-        while let Ok(stats_vec) = progress_receiver.recv().await {
-            if stats_vec.len() > 0 {
-                for item in stats_vec {
-                    println!(
-                        "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
-                        item.1.instant_speed / 1024.0 / 1024.0,
-                        item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
-                        item.1.total_bytes as f64 / 1024.0 / 1024.0
-                    );
+        while let Ok(event) = event_tx.recv().await {
+            match event {
+                TransferEvent::Progress { updates } => {
+                    if updates.len() > 0 {
+                        for item in updates {
+                            println!(
+                                "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
+                                item.1.instant_speed / 1024.0 / 1024.0,
+                                item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
+                                item.1.total_bytes as f64 / 1024.0 / 1024.0
+                            );
+                        }
+                    } else {
+                        println!("No stats");
+                    }
                 }
-            } else {
-                println!("No stats");
+                _ => {}
             }
         }
     });
-
-    aggregator
 }
 
 async fn run() {
