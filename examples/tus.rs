@@ -8,9 +8,9 @@ use tunnel::tus::{TusProtocolBuilder};
 #[tokio::main]
 async fn main() -> Result<()> {
     let scheduler = TunnelScheduler::new();
-    scheduler.add_task(Box::new(create_tus_builder())).await?;
-    scheduler.add_task(Box::new(create_tus_builder())).await?;
-    scheduler.add_task(Box::new(create_tus_builder())).await?;
+    scheduler.add_task(Box::new(create_task_builder())).await?;
+    scheduler.add_task(Box::new(create_task_builder())).await?;
+    scheduler.add_task(Box::new(create_task_builder())).await?;
 
     tokio::spawn(handle_transfer_event(scheduler.subscribe()));
 
@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn create_tus_builder() -> impl TransferProtocolBuilder {
+fn create_task_builder() -> impl TransferProtocolBuilder {
     let config = get_config();
     let mut headers = HashMap::new();
     headers.insert("Authorization".to_string(), config.token);
