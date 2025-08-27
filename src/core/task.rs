@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use futures_util::SinkExt;
-use tokio::sync::{Semaphore, mpsc, RwLock};
+use tokio::sync::{Semaphore, mpsc, RwLock, oneshot};
 use tokio::task::JoinHandle;
 use crate::TransferProtocol;
 use super::{
@@ -11,8 +11,19 @@ use super::{
     TransferProtocolBuilder
 };
 
+pub enum ManagerCommand {
+    AddTask {
+        builder: Box<dyn TransferProtocolBuilder>,
+        bytes_tx: mpsc::UnboundedSender<u64>,
+        reply: oneshot::Sender<TransferId>,
+    },
+    PauseTask,
+    ResumeTask,
+    CancelTask,
+}
+
 #[derive(Clone)]
-pub enum TaskExecuteInnerEvent {
+enum TaskExecuteInnerEvent {
     Started { id: TransferId },
     Completed { id: TransferId },
     Failed { id: TransferId, reason: String },
@@ -28,12 +39,12 @@ pub struct TransferTask {
     pub completed_at: Option<Instant>,
 }
 
-struct TaskExecutor {
+struct TaskExecute {
     semaphore: Arc<Semaphore>,
     event_tx: mpsc::UnboundedSender<TaskExecuteInnerEvent>
 }
 
-impl TaskExecutor {
+impl TaskExecute {
     async fn execute(&self, task: &TransferTask) -> JoinHandle<()> {
         let mut event_tx = self.event_tx.clone();
         let semaphore = self.semaphore.clone();
@@ -158,14 +169,14 @@ impl TaskStore {
     }
 }
 
-pub struct QueueExecutor {
+pub struct TaskQueue {
     store: TaskStore,
-    executor: Arc<TaskExecutor>,
+    executor: Arc<TaskExecute>,
 }
 
-impl QueueExecutor {
+impl TaskQueue {
     pub fn new(max_concurrent: usize, event_tx: mpsc::UnboundedSender<TaskExecuteInnerEvent>) -> Self {
-        let executor = Arc::new(TaskExecutor {
+        let executor = Arc::new(TaskExecute {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             event_tx,
         });
@@ -195,19 +206,12 @@ impl QueueExecutor {
     }
 }
 
-pub struct TaskManager {
-    pub queue_executor: Arc<RwLock<QueueExecutor>>,
+pub struct TaskEventHandle {
+    pub queue_executor: Arc<RwLock<TaskQueue>>,
     pub event_rx: mpsc::UnboundedReceiver<TaskExecuteInnerEvent>,
 }
 
-impl TaskManager {
-    pub fn new(
-        queue_executor: Arc<RwLock<QueueExecutor>>,
-        event_rx: mpsc::UnboundedReceiver<TaskExecuteInnerEvent>
-    ) -> Self {
-        Self { queue_executor, event_rx }
-    }
-    
+impl TaskEventHandle {
     pub async fn run(mut self) {
         while let Some(event) = self.event_rx.recv().await {
             self.handle_event(event).await;
@@ -233,4 +237,81 @@ impl TaskManager {
         }
     }
 }
+
+struct TaskManagerWorker {
+    executor: Arc<RwLock<TaskQueue>>,
+    command_rx: mpsc::Receiver<ManagerCommand>,
+}
+
+impl TaskManagerWorker {
+    pub async fn run(mut self) {
+        while let Some(command) = self.command_rx.recv().await {
+            self.handle_command(command).await;
+        }
+    }
+
+    pub async fn handle_command(&mut self, command: ManagerCommand) {
+        match command {
+            ManagerCommand::AddTask {
+                builder,
+                bytes_tx,
+                reply,
+            } => {
+                let id = self.add_task(builder, bytes_tx).await;
+                let _ = reply.send(id);
+            }
+            ManagerCommand::PauseTask => {}
+            ManagerCommand::ResumeTask => {}
+            ManagerCommand::CancelTask => {}
+        }
+    }
+
+    async fn add_task(&self, builder: Box<dyn TransferProtocolBuilder>, bytes_tx: mpsc::UnboundedSender<u64>) -> TransferId {
+        let transfer_id = TransferId::new();
+        let task = TransferTask {
+            builder,
+            bytes_tx,
+            id: transfer_id.clone(),
+            state: TransferState::Queued,
+            created_at: Instant::now(),
+            started_at: None,
+            completed_at: None,
+        };
+        let mut manager_guard = self.executor.write().await;
+        manager_guard.add_task(task).await;
+
+        transfer_id
+    }
+}
+
+pub struct MangerWorkerHandle {
+    worker_handle: JoinHandle<()>,
+    manager_handle: JoinHandle<()>,
+}
+
+impl MangerWorkerHandle {
+    pub fn new(command_rx: mpsc::Receiver<ManagerCommand>) -> Self {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        
+        let executor = Arc::new(RwLock::new(
+            TaskQueue::new(3, event_tx)
+        ));
+        let manager_worker = TaskManagerWorker { executor: executor.clone(), command_rx };
+        let manager_handle = tokio::spawn(manager_worker.run());
+
+        let manager = TaskEventHandle { queue_executor: executor, event_rx, };
+        let worker_handle = tokio::spawn(manager.run());
+
+        Self {
+            worker_handle,
+            manager_handle
+        }
+    }
+    
+    pub fn shutdown(&self) {
+        self.manager_handle.abort();
+        self.worker_handle.abort();
+    }
+}
+
 

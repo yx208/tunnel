@@ -10,5 +10,5 @@ pub use errors::{Result, TransferError};
 pub use types::*;
 pub use traits::*;
 pub use tunnel::Tunnel;
-pub use task::{TransferTask, TaskManager, QueueExecutor};
+pub use task::{TransferTask, TaskEventHandle, TaskQueue};
 

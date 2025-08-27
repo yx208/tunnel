@@ -90,6 +90,12 @@ pub enum TransferEvent {
 
     Cancelled {
         id: TransferId,
+    },
+    
+    Retry {
+        id: TransferId,
+        attempt: u32,
+        reason: String,
     }
 }
 
