@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 use tunnel::config::get_config;
-use tunnel::{Result, TransferConfig, TransferEvent, TransferProtocolBuilder};
-use tunnel::scheduler::TunnelScheduler;
-use tunnel::tus::{TusProtocolBuilder};
+use tunnel::{
+    Result,
+    TransferConfig,
+    TransferEvent,
+    TransferProtocolBuilder,
+    TunnelScheduler,
+    tus::TusProtocolBuilder
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
