@@ -50,6 +50,12 @@ async fn handle_transfer_event(mut event_tx: broadcast::Receiver<TransferEvent>)
                     println!("No stats");
                 }
             }
+            TransferEvent::Started { id } => {
+                println!("Task {:?} has been started", id);
+            }
+            TransferEvent::Completed { id } => {
+                println!("Task {:?} has been completed", id);
+            }
             _ => {}
         }
     }

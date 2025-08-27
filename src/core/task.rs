@@ -2,9 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use futures_util::SinkExt;
-use tokio::sync::{Semaphore, mpsc, RwLock, oneshot};
+use tokio::sync::{Semaphore, RwLock, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use crate::TransferProtocol;
+use crate::{TransferEvent, TransferProtocol};
 use super::{
     TransferId,
     TransferState,
@@ -208,12 +208,13 @@ impl TaskQueue {
 
 pub struct TaskEventHandle {
     pub queue_executor: Arc<RwLock<TaskQueue>>,
-    pub event_rx: mpsc::UnboundedReceiver<TaskExecuteInnerEvent>,
+    pub task_event_rx: mpsc::UnboundedReceiver<TaskExecuteInnerEvent>,
+    pub event_tx: broadcast::Sender<TransferEvent>,
 }
 
 impl TaskEventHandle {
     pub async fn run(mut self) {
-        while let Some(event) = self.event_rx.recv().await {
+        while let Some(event) = self.task_event_rx.recv().await {
             self.handle_event(event).await;
         }
     }
@@ -223,16 +224,18 @@ impl TaskEventHandle {
             TaskExecuteInnerEvent::Started { id } => {
                 let mut queue_guard = self.queue_executor.write().await;
                 queue_guard.store.update_state(&id, TransferState::Running);
+                let _ = self.event_tx.send(TransferEvent::Started { id });
             }
             TaskExecuteInnerEvent::Completed { id } => {
-                println!("Completed: {:?}", id);
                 let mut queue_guard = self.queue_executor.write().await;
                 queue_guard.store.mark_completed(&id);
                 queue_guard.try_execute_next().await;
+                let _ = self.event_tx.send(TransferEvent::Completed { id });
             }
             TaskExecuteInnerEvent::Failed { id, reason } => {
                 let mut queue_guard = self.queue_executor.write().await;
-                queue_guard.store.mark_failed(&id, reason);
+                queue_guard.store.mark_failed(&id, reason.clone());
+                let _ = self.event_tx.send(TransferEvent::Failed { id, reason });
             }
         }
     }
@@ -290,16 +293,24 @@ pub struct MangerWorkerHandle {
 }
 
 impl MangerWorkerHandle {
-    pub fn new(command_rx: mpsc::Receiver<ManagerCommand>) -> Self {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        
+    pub fn new(command_rx: mpsc::Receiver<ManagerCommand>, event_tx: broadcast::Sender<TransferEvent>) -> Self {
+        let (
+            task_event_tx,
+            task_event_rx,
+        ) = mpsc::unbounded_channel();
+
         let executor = Arc::new(RwLock::new(
-            TaskQueue::new(3, event_tx)
+            TaskQueue::new(1, task_event_tx)
         ));
+
         let manager_worker = TaskManagerWorker { executor: executor.clone(), command_rx };
         let manager_handle = tokio::spawn(manager_worker.run());
 
-        let manager = TaskEventHandle { queue_executor: executor, event_rx, };
+        let manager = TaskEventHandle {
+            queue_executor: executor,
+            task_event_rx,
+            event_tx,
+        };
         let worker_handle = tokio::spawn(manager.run());
 
         Self {
@@ -307,7 +318,7 @@ impl MangerWorkerHandle {
             manager_handle
         }
     }
-    
+
     pub fn shutdown(&self) {
         self.manager_handle.abort();
         self.worker_handle.abort();

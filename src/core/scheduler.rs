@@ -23,7 +23,7 @@ impl TunnelScheduler {
         let (event_tx, _) = broadcast::channel(128);
         let (command_tx, command_rx) = mpsc::channel(64);
 
-        let worker = MangerWorkerHandle::new(command_rx);
+        let worker = MangerWorkerHandle::new(command_rx, event_tx.clone());
 
         let aggregator = ProgressAggregator::new(event_tx.clone())
             .enable_report();
