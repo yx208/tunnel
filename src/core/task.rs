@@ -116,6 +116,10 @@ impl TaskStore {
         self.pending_queue.push_back(id);
     }
 
+    fn has_next_task(&self) -> bool {
+        self.pending_queue.len() > 0
+    }
+
     fn get_next_pending(&mut self) -> Option<TransferId> {
         self.pending_queue.pop_front()
     }
@@ -229,8 +233,14 @@ impl TaskEventHandle {
             TaskExecuteInnerEvent::Completed { id } => {
                 let mut queue_guard = self.queue_executor.write().await;
                 queue_guard.store.mark_completed(&id);
-                queue_guard.try_execute_next().await;
-                let _ = self.event_tx.send(TransferEvent::Completed { id });
+
+                let _ = self.event_tx.send(TransferEvent::Success { id });
+
+                if queue_guard.store.has_next_task() {
+                    queue_guard.try_execute_next().await;
+                } else {
+                    let _ = self.event_tx.send(TransferEvent::Finished);
+                }
             }
             TaskExecuteInnerEvent::Failed { id, reason } => {
                 let mut queue_guard = self.queue_executor.write().await;

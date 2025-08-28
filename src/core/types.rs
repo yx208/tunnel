@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use serde_json::ser::State;
 use uuid::Uuid;
+use crate::TransferTask;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct TransferId(Uuid);
@@ -65,38 +66,48 @@ impl TransferState {
 
 #[derive(Debug, Clone)]
 pub enum TransferEvent {
+    /// Transfer state has changed
     StateChanged {
         id: TransferId,
         old_state: TransferState,
         new_state: TransferState,
     },
 
+    /// Transfer progress has been updated
     Progress {
         updates: Vec<(TransferId, TransferStats)>,
     },
 
+    /// Transfer task has started
     Started {
         id: TransferId,
     },
 
-    Completed {
+    /// Single transfer task completed successfully
+    Success {
         id: TransferId,
     },
 
+    /// Transfer task has failed
     Failed {
         id: TransferId,
         reason: String,
     },
 
+    /// Transfer task has been cancelled
     Cancelled {
         id: TransferId,
     },
-    
+
+    /// Transfer task is being retried
     Retry {
         id: TransferId,
         attempt: u32,
         reason: String,
-    }
+    },
+
+    /// All transfer tasks have finished
+    Finished,
 }
 
 #[derive(Clone, Debug)]

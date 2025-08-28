@@ -42,23 +42,13 @@ async fn handle_transfer_event(mut event_tx: broadcast::Receiver<TransferEvent>)
     while let Ok(event) = event_tx.recv().await {
         match event {
             TransferEvent::Progress { updates } => {
-                if updates.len() > 0 {
-                    for item in updates {
-                        println!(
-                            "{:.2?}MB/s, current: {:.2?}, Total: {:.2?}",
-                            item.1.instant_speed / 1024.0 / 1024.0,
-                            item.1.bytes_transferred as f64 / 1024.0 / 1024.0,
-                            item.1.total_bytes as f64 / 1024.0 / 1024.0
-                        );
-                    }
-                } else {
-                    println!("No stats");
-                }
+                let sum_speed = updates
+                    .iter()
+                    .map(|(_, x)| x.instant_speed)
+                    .sum::<f64>();
+                println!("Current speed: {:.2?}MB/s", sum_speed  / 1024.0 / 1024.0);
             }
-            TransferEvent::Started { id } => {
-                println!("Task {:?} has been started", id);
-            }
-            TransferEvent::Completed { id } => {
+            TransferEvent::Success { id } => {
                 println!("Task {:?} has been completed", id);
             }
             _ => {}
