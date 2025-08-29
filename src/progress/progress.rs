@@ -14,12 +14,17 @@ pin_project! {
         #[pin]
         inner: S,
         bytes_tx: mpsc::UnboundedSender<u64>,
+        read_bytes: Option<u64>,
     }
 }
 
 impl<S> FileStream<S> {
     pub fn new(inner: S, bytes_tx: mpsc::UnboundedSender<u64>) -> Self {
-        Self { inner, bytes_tx }
+        Self {
+            inner,
+            bytes_tx,
+            read_bytes: None,
+        }
     }
 }
 
@@ -30,11 +35,21 @@ where
     type Item = std::io::Result<Bytes>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let project = self.project();
+        let mut project = self.project();
         match project.inner.poll_next(cx) {
             Poll::Ready(Some(Ok(item))) => {
-                let _ = project.bytes_tx.send(item.len() as u64);
+                if project.read_bytes.is_some() {
+                    let _ = project.bytes_tx.send(project.read_bytes.unwrap());
+                }
+
+                *project.read_bytes = Some(item.len() as u64);
+
                 Poll::Ready(Some(Ok(item)))
+            },
+            Poll::Ready(None) => {
+                let _ = project.bytes_tx.send(project.read_bytes.unwrap());
+                *project.read_bytes = Some(0);
+                Poll::Ready(None)
             },
             other => other
         }
@@ -89,7 +104,9 @@ impl TaskProgress {
     }
 
     pub async fn get_stats(&self) -> TransferStats {
-        let instant_speed = if self.samples.len() < 2 {
+
+
+        let instant_speed = if self.samples.len() < 5 {
             0.0
         } else {
             let (first_bytes, first_time) = self.samples.front().unwrap();
