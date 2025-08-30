@@ -104,23 +104,25 @@ impl TaskProgress {
     }
 
     pub async fn get_stats(&self) -> TransferStats {
+        let instant_speed = match self.samples.len() {
+            len if len >= 2 => {
+                let (first_bytes, first_time) = self.samples.front().unwrap();
+                let (last_bytes, last_time) = self.samples.back().unwrap();
 
+                let bytes_diff = last_bytes.saturating_sub(*first_bytes);
+                let time_diff = last_time.duration_since(*first_time).as_secs_f64();
 
-        let instant_speed = if self.samples.len() < 5 {
-            0.0
-        } else {
-            let (first_bytes, first_time) = self.samples.front().unwrap();
-            let (last_bytes, last_time) = self.samples.back().unwrap();
-
-            let bytes_diff = last_bytes.saturating_sub(*first_bytes);
-            let time_diff = last_time.duration_since(*first_time).as_secs_f64();
-
-            if time_diff > 0.0 {
-                bytes_diff as f64 / time_diff
-            } else {
+                if time_diff > 0.0 {
+                    bytes_diff as f64 / time_diff
+                } else {
+                    0.0
+                }
+            }
+            _ => {
                 0.0
             }
         };
+
         let average_speed = self.bytes_transferred as f64 / self.start_time.elapsed().as_secs_f64();
 
         TransferStats {
