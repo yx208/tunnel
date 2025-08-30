@@ -1,8 +1,8 @@
 #![allow(warnings, warnings)]
 
-pub mod core;
+mod core;
+pub mod protocol;
 pub mod config;
-pub mod tus;
 pub mod progress;
 
 pub use core::*;

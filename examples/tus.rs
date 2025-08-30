@@ -7,7 +7,7 @@ use tunnel::{
     TransferEvent,
     TransferProtocolBuilder,
     TunnelScheduler,
-    tus::TusProtocolBuilder
+    protocol::TusProtocolBuilder,
 };
 
 #[tokio::main]
