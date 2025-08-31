@@ -38,30 +38,15 @@ impl TransferContext {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Copy, Eq, PartialEq)]
 pub enum TransferState {
     Queued,
-    Preparing,
+    // Preparing,
     Running,
     Paused,
     Completed,
     Failed,
     Cancelled,
-}
-
-impl TransferState {
-    pub fn can_to(&self, state: &TransferState) -> bool {
-        match (self, state)  {
-            (TransferState::Queued, _) => true,
-
-            (TransferState::Preparing, TransferState::Queued) => false,
-            (TransferState::Preparing, _) => true,
-
-            (TransferState::Running, _) => true,
-
-            _ => false
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

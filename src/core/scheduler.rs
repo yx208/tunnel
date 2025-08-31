@@ -40,7 +40,7 @@ impl TunnelScheduler {
         self.event_tx.subscribe()
     }
 
-    pub async fn add_task(&self, builder: Box<dyn TransferProtocolBuilder>) -> Result<()> {
+    pub async fn add_task(&self, builder: Box<dyn TransferProtocolBuilder>) -> Result<TransferId> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let (bytes_tx, bytes_rx) = mpsc::unbounded_channel();
 
@@ -53,13 +53,22 @@ impl TunnelScheduler {
             .await
             .map_err(|_| TransferError::ManagerShutdown)?;
 
-        self.aggregator.registry_task(id, bytes_rx).await;
+        self.aggregator.registry_task(id.clone(), bytes_rx).await;
 
-        Ok(())
+        Ok(id)
     }
 
     pub async fn cancel_task(&self, id: TransferId) -> Result<()> {
         self.aggregator.unregister_task(&id).await;
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(ManagerCommand::CancelTask { id, reply: reply_tx })
+            .await
+            .map_err(|_| TransferError::ManagerShutdown)?;
+        
+        let _ = reply_rx.await.map_err(|_| TransferError::ManagerShutdown)?;
+        
         Ok(())
     }
 }
