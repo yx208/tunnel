@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, Mutex, RwLock, broadcast};
 use bytes::Bytes;
 use futures::Stream;
 use pin_project_lite::pin_project;
+use tokio_util::sync::CancellationToken;
 use crate::{TransferEvent, TransferId, TransferStats};
 
 pin_project! {
@@ -166,43 +167,36 @@ impl SpeedTracker {
 }
 
 pub struct ProgressAggregator {
-    trackers: Arc<RwLock<HashMap<TransferId, SpeedTracker>>>,
-    event_tx: broadcast::Sender<TransferEvent>,
-    handle: Option<tokio::task::JoinHandle<()>>,
+    pub trackers: Arc<RwLock<HashMap<TransferId, SpeedTracker>>>,
+    pub event_tx: broadcast::Sender<TransferEvent>,
+    pub cancellation_token: CancellationToken,
 }
 
 impl ProgressAggregator {
-    pub fn new(event_tx: broadcast::Sender<TransferEvent>) -> Self {
-        let aggregator = Self {
-            trackers: Arc::new(RwLock::new(HashMap::new())),
-            event_tx,
-            handle: None,
-        };
-
-        aggregator
-    }
-
     pub fn enable_report(mut self) -> Self {
         let trackers = self.trackers.clone();
         let event_tx = self.event_tx.clone();
+        
+        let cancellation_token = self.cancellation_token.clone();
         let handle = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                let mut stats_vec = Vec::new();
-                let trackers_guard = trackers.read().await;
-                for item in trackers_guard.iter() {
-                    let stats = item.1.tracker.lock().await.get_stats().await;
-                    stats_vec.push((item.0.clone(), stats));
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                        let mut stats_vec = Vec::new();
+                        let trackers_guard = trackers.read().await;
+                        for item in trackers_guard.iter() {
+                            let stats = item.1.tracker.lock().await.get_stats().await;
+                            stats_vec.push((item.0.clone(), stats));
+                        }
+                        
+                        let _ = event_tx.send(TransferEvent::Progress {
+                            updates: stats_vec
+                        });
+                    }
                 }
-                
-                let _ = event_tx.send(TransferEvent::Progress {
-                    updates: stats_vec
-                });
             }
         });
-
-        self.handle = Some(handle);
 
         self
     }
@@ -220,12 +214,7 @@ impl ProgressAggregator {
         }
     }
 
-    pub async fn shutdown(&mut self) {
-        let handle = self.handle.take();
-        if let Some(handle) = handle {
-            handle.abort();
-        }
-
+    pub async fn clear(&mut self) {
         let mut trackers_guard = self.trackers.write().await;
         trackers_guard.clear();
     }

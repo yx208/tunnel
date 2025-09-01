@@ -6,25 +6,25 @@ use tunnel::{
     TransferConfig,
     TransferEvent,
     TransferProtocolBuilder,
-    TunnelScheduler,
+    Tunnel,
     protocol::TusProtocolBuilder,
 };
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let scheduler = TunnelScheduler::new();
-    let task_id = scheduler.add_task(Box::new(create_task_builder())).await?;
-    scheduler.add_task(Box::new(create_task_builder())).await?;
-    scheduler.add_task(Box::new(create_task_builder())).await?;
+    let tunnel = Tunnel::new();
+    tunnel.add_task(Box::new(create_task_builder())).await?;
+    tunnel.add_task(Box::new(create_task_builder())).await?;
+    tunnel.add_task(Box::new(create_task_builder())).await?;
 
-    tokio::spawn(handle_transfer_event(scheduler.subscribe()));
+    tokio::spawn(handle_transfer_event(tunnel.subscribe()));
 
-    let handle = tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
-        let _ = scheduler.cancel_task(task_id).await;
-    });
+    // let handle = tokio::spawn(async move {
+    //     tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
+    //     let _ = tunnel.cancel_task(task_id).await;
+    // });
+    // let _ = tokio::join!(handle);
 
-    let _ = tokio::join!(handle);
     run().await;
 
     Ok(())
