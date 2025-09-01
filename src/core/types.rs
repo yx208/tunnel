@@ -54,8 +54,9 @@ pub enum TransferEvent {
     /// Transfer state has changed
     StateChanged {
         id: TransferId,
-        old_state: TransferState,
-        new_state: TransferState,
+        from: TransferState,
+        to: TransferState,
+        reason: Option<String>,
     },
 
     /// Transfer progress has been updated
@@ -63,26 +64,26 @@ pub enum TransferEvent {
         updates: Vec<(TransferId, TransferStats)>,
     },
 
-    /// Transfer task has started
-    Started {
-        id: TransferId,
-    },
-
-    /// Single transfer task completed successfully
-    Success {
-        id: TransferId,
-    },
-
-    /// Transfer task has failed
-    Failed {
-        id: TransferId,
-        reason: String,
-    },
-
-    /// Transfer task has been cancelled
-    Cancelled {
-        id: TransferId,
-    },
+    // /// Transfer task has started
+    // Started {
+    //     id: TransferId,
+    // },
+    // 
+    // /// Single transfer task completed successfully
+    // Success {
+    //     id: TransferId,
+    // },
+    // 
+    // /// Transfer task has failed
+    // Failed {
+    //     id: TransferId,
+    //     reason: String,
+    // },
+    // 
+    // /// Transfer task has been cancelled
+    // Cancelled {
+    //     id: TransferId,
+    // },
 
     /// Transfer task is being retried
     Retry {

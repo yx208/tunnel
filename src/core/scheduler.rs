@@ -71,4 +71,22 @@ impl TunnelScheduler {
         
         Ok(())
     }
+
+    pub async fn pause_task(&self, id: TransferId) -> Result<()> {
+        self.aggregator.unregister_task(&id).await;
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ManagerCommand::PauseTask { id, reply: reply_tx })
+            .await
+            .map_err(|_| TransferError::ManagerShutdown)?;
+
+        let _ = reply_rx.await.map_err(|_| TransferError::ManagerShutdown)?;
+
+        Ok(())
+    }
+
+    pub async fn resume_task(&self, id: TransferId) -> Result<()> {
+        Ok(())
+    }
 }

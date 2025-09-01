@@ -56,9 +56,6 @@ async fn handle_transfer_event(mut event_tx: broadcast::Receiver<TransferEvent>)
                     println!("Current speed: {:.2?}MB/s", sum_speed  / 1024.0 / 1024.0);
                 }
             }
-            TransferEvent::Success { id } => {
-                println!("Task {:?} has been completed", id);
-            }
             _ => {}
         }
     }

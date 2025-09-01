@@ -17,7 +17,10 @@ pub enum ManagerCommand {
         bytes_tx: mpsc::UnboundedSender<u64>,
         reply: oneshot::Sender<TransferId>,
     },
-    PauseTask,
+    PauseTask {
+        id: TransferId,
+        reply: oneshot::Sender<()>,
+    },
     ResumeTask,
     CancelTask {
         id: TransferId,
@@ -27,9 +30,21 @@ pub enum ManagerCommand {
 
 #[derive(Clone)]
 enum TaskExecuteInnerEvent {
-    Started { id: TransferId },
-    Completed { id: TransferId },
-    Failed { id: TransferId, reason: String },
+    Started {
+        id: TransferId,
+        from: TransferState
+    },
+    
+    Completed {
+        id: TransferId,
+        from: TransferState,
+    },
+    
+    Failed {
+        id: TransferId,
+        reason: String,
+        from: TransferState,
+    },
 }
 
 pub struct TransferTask {
@@ -174,6 +189,7 @@ impl TaskQueue {
                 Err(_) => {
                     let _ = event_tx.send(TaskExecuteInnerEvent::Failed {
                         id: task_id,
+                        from: TransferState::Queued,
                         reason: "Failed to acquire semaphore".to_string()
                     });
                     return;
@@ -181,14 +197,18 @@ impl TaskQueue {
             };
 
             // Start
-            let _ = event_tx.send(TaskExecuteInnerEvent::Started { id: task_id.clone() });
+            let _ = event_tx.send(TaskExecuteInnerEvent::Started {
+                id: task_id.clone(),
+                from: TransferState::Queued,
+            });
 
             // Initialize error
             let init_result = protocol.initialize(&mut context).await;
             if let Err(err) = init_result {
                 let _ = event_tx.send(TaskExecuteInnerEvent::Failed {
                     id: task_id,
-                    reason: err.to_string()
+                    reason: err.to_string(),
+                    from: TransferState::Running,
                 });
                 return;
             }
@@ -197,12 +217,16 @@ impl TaskQueue {
             let execute_result = protocol.execute(&context, bytes_tx).await;
             match execute_result {
                 Ok(_) => {
-                    let _ = event_tx.send(TaskExecuteInnerEvent::Completed { id: task_id });
+                    let _ = event_tx.send(TaskExecuteInnerEvent::Completed {
+                        id: task_id,
+                        from: TransferState::Running,
+                    });
                 }
                 Err(err) => {
                     let _ = event_tx.send(TaskExecuteInnerEvent::Failed {
                         id: task_id,
-                        reason: err.to_string()
+                        reason: err.to_string(),
+                        from: TransferState::Running,
                     });
                 }
             }
@@ -230,16 +254,26 @@ impl TaskEventHandle {
 
     async fn handle_event(&mut self, event: TaskExecuteInnerEvent) {
         match event {
-            TaskExecuteInnerEvent::Started { id } => {
+            TaskExecuteInnerEvent::Started { id, from } => {
                 let mut queue_guard = self.queue_executor.write().await;
                 queue_guard.store.update_state(&id, TransferState::Running);
-                let _ = self.event_tx.send(TransferEvent::Started { id });
+                let _ = self.event_tx.send(TransferEvent::StateChanged {
+                    id,
+                    from,
+                    to: TransferState::Running,
+                    reason: None,
+                });
             }
-            TaskExecuteInnerEvent::Completed { id } => {
+            TaskExecuteInnerEvent::Completed { id, from } => {
                 let mut queue_guard = self.queue_executor.write().await;
                 queue_guard.store.mark_completed(&id);
 
-                let _ = self.event_tx.send(TransferEvent::Success { id });
+                let _ = self.event_tx.send(TransferEvent::StateChanged {
+                    id,
+                    reason: None,
+                    from,
+                    to: TransferState::Completed,
+                });
 
                 if queue_guard.store.has_next_task() {
                     queue_guard.try_execute_next().await;
@@ -247,10 +281,15 @@ impl TaskEventHandle {
                     let _ = self.event_tx.send(TransferEvent::Finished);
                 }
             }
-            TaskExecuteInnerEvent::Failed { id, reason } => {
+            TaskExecuteInnerEvent::Failed { id, reason, from } => {
                 let mut queue_guard = self.queue_executor.write().await;
                 queue_guard.store.mark_failed(&id, reason.clone());
-                let _ = self.event_tx.send(TransferEvent::Failed { id, reason });
+                let _ = self.event_tx.send(TransferEvent::StateChanged {
+                    id,
+                    from, 
+                    to: TransferState::Failed,
+                    reason: Some(reason),
+                });
             }
         }
     }
@@ -278,7 +317,10 @@ impl TaskManagerWorker {
                 let id = self.add_task(builder, bytes_tx).await;
                 let _ = reply.send(id);
             }
-            ManagerCommand::PauseTask => {}
+            ManagerCommand::PauseTask { id, reply } => {
+                self.pause_task(id).await;
+                let _ = reply.send(());
+            }
             ManagerCommand::ResumeTask => {}
             ManagerCommand::CancelTask { id, reply } => {
                 self.cancel_task(id).await;
@@ -308,6 +350,14 @@ impl TaskManagerWorker {
         let mut queue_guard = self.queue.write().await;
         queue_guard.store.cancel_task(&id);
     }
+
+    async fn pause_task(&self, id: TransferId) {
+        
+    }
+    
+    async fn resume_task(&self, id: TransferId) {
+        
+    }
 }
 
 pub struct MangerWorkerHandle {
@@ -322,15 +372,15 @@ impl MangerWorkerHandle {
             task_event_rx,
         ) = mpsc::unbounded_channel();
 
-        let executor = Arc::new(RwLock::new(
+        let queue = Arc::new(RwLock::new(
             TaskQueue::new(1, task_event_tx)
         ));
 
-        let manager_worker = TaskManagerWorker { queue: executor.clone(), command_rx };
+        let manager_worker = TaskManagerWorker { queue: queue.clone(), command_rx };
         let manager_handle = tokio::spawn(manager_worker.run());
 
         let manager = TaskEventHandle {
-            queue_executor: executor,
+            queue_executor: queue,
             task_event_rx,
             event_tx,
         };
