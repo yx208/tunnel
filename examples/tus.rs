@@ -14,8 +14,8 @@ use tunnel::{
 async fn main() -> Result<()> {
     let scheduler = TunnelScheduler::new();
     let task_id = scheduler.add_task(Box::new(create_task_builder())).await?;
-    // scheduler.add_task(Box::new(create_task_builder())).await?;
-    // scheduler.add_task(Box::new(create_task_builder())).await?;
+    scheduler.add_task(Box::new(create_task_builder())).await?;
+    scheduler.add_task(Box::new(create_task_builder())).await?;
 
     tokio::spawn(handle_transfer_event(scheduler.subscribe()));
 

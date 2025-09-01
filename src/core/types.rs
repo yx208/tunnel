@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use serde_json::ser::State;
+use tokio::sync::mpsc;
 use uuid::Uuid;
-use crate::TransferTask;
+use crate::TransferProtocolBuilder;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct TransferId(Uuid);
@@ -107,3 +107,12 @@ pub struct TransferStats {
     pub eta: Option<Duration>,
 }
 
+pub struct TransferTask {
+    pub id: TransferId,
+    pub state: TransferState,
+    pub builder: Box<dyn TransferProtocolBuilder>,
+    pub bytes_tx: mpsc::UnboundedSender<u64>,
+    pub created_at: Instant,
+    pub started_at: Option<Instant>,
+    pub completed_at: Option<Instant>,
+}
