@@ -303,10 +303,7 @@ impl CommandHandler {
                 let future = CommandHandler::execute_task(protocol, bytes_tx, context, );
                 let _ = task_event_tx.send(TaskExecuteEvent::Execute { id: transfer_id });
                 tokio::select! {
-                    _ = task_token.cancelled() => {
-                        println!("Cancelled task");
-                        drop(permit);
-                    },
+                    _ = task_token.cancelled() => drop(permit),
                     result = future => {
                         match result {
                             Ok(_) => {
