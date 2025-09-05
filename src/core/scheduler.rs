@@ -204,7 +204,12 @@ impl CommandHandler {
                 let _ = reply.send(result);
                 self.schedule_task().await;
             }
-            ManagerCommand::PauseTask { .. } => {}
+            ManagerCommand::PauseTask { id, reply } => {
+                let _ = self.pause_task(id).await;
+                self.aggregator.unregister_task(&id).await;
+                let _ = reply.send(());
+                self.schedule_task().await;
+            }
             ManagerCommand::ResumeTask => {}
             ManagerCommand::CancelTask { id, reply } => {
                 let _ = self.cancel_task(id).await;
@@ -265,7 +270,6 @@ impl CommandHandler {
 
     async fn schedule_task(&self) {
         if self.semaphore.available_permits() == 0 {
-            println!("meiyou");
             return;
         }
 
@@ -293,7 +297,7 @@ impl CommandHandler {
             // inner vars
             let transfer_id = next_id.clone();
             let task_event_tx = self.task_event_tx.clone();
-            
+
             // token
             let cancellation_token = CancellationToken::new();
             let task_token = cancellation_token.clone();
@@ -353,6 +357,43 @@ impl CommandHandler {
                 // TransferState::Completed => {}
                 // TransferState::Failed => {}
                 // TransferState::Cancelled => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn pause_task(&self, id: TransferId) -> Result<()> {
+        let mut manager = self.manager.write().await;
+        if let Some(task) = manager.tasks.get_mut(&id) {
+            let old_state = task.state;
+            task.state = TransferState::Paused;
+
+            match old_state {
+                TransferState::Queued => {
+                    let _ = manager.pending_tasks.retain(|x| *x != id);
+                }
+                TransferState::Running => {
+                    if let Some(token) = manager.running_tasks.remove(&id) {
+                        token.cancelled_owned().await;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn resume_task(&self, id: TransferId) -> Result<()> {
+        let mut manager = self.manager.write().await;
+        if let Some(task) = manager.tasks.get_mut(&id) {
+            let old_state = task.state;
+            task.state = TransferState::Queued;
+
+            match old_state {
+                TransferState::Paused => manager.pending_tasks.push_front(id),
+                _ => {}
             }
         }
 
