@@ -34,22 +34,27 @@ impl TusConfig {
 }
 
 pub struct TusProtocol {
-    config: TusConfig,
+    config: TransferConfig,
+    tus_config: TusConfig,
     client: Client,
+    context: TransferContext,
 }
 
 impl TusProtocol {
-    pub fn new(config: TusConfig) -> Self {
+    pub fn new(config: TransferConfig, tus_config: TusConfig) -> Self {
+        let context = TransferContext::new(config.source.clone());
         Self {
             config,
+            tus_config,
             client: Client::new(),
+            context
         }
     }
 
     async fn create_upload(&self, length: u64) -> Result<String> {
         let headers = self.create_header_map()?;
         let response = self.client
-            .post(&self.config.endpoint)
+            .post(&self.tus_config.endpoint)
             .header("Tus-Resumable", "1.0.0")
             .header("Upload-Length", length)
             .headers(headers)
@@ -76,7 +81,7 @@ impl TusProtocol {
         if location.starts_with("http") {
             Ok(location.to_string())
         } else {
-            let base_url = Url::parse(&self.config.endpoint)?;
+            let base_url = Url::parse(&self.tus_config.endpoint)?;
             let final_url = base_url.join(location)?;
             Ok(final_url.to_string())
         }
@@ -84,7 +89,7 @@ impl TusProtocol {
 
     fn create_header_map(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        for (k, v) in &self.config.headers {
+        for (k, v) in &self.tus_config.headers {
             headers.insert(
                 HeaderName::from_str(&k)?,
                 HeaderValue::from_str(&v)?
@@ -146,10 +151,10 @@ impl TransferProtocol for TusProtocol {
     async fn execute(
         &self,
         ctx: &TransferContext,
-        progress_tx: mpsc::UnboundedSender<u64>
+        progress_tx: Option<mpsc::UnboundedSender<u64>>
     ) -> Result<()> {
         let mut headers = HeaderMap::new();
-        for (k, v) in &self.config.headers {
+        for (k, v) in &self.tus_config.headers {
             headers.insert(
                 HeaderName::from_str(&k)?,
                 HeaderValue::from_str(&v)?
@@ -201,7 +206,8 @@ impl TransferProtocolBuilder for TusProtocolBuilder {
             headers: self.config.headers.clone(),
             buffer_size: 1024 * 1024 * 2,
         };
-        Box::new(TusProtocol::new(config))
+        let protocol = TusProtocol::new(self.config.clone(), config);
+        Box::new(protocol)
     }
 }
 

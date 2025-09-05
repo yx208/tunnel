@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use uuid::Uuid;
 use crate::TransferProtocolBuilder;
 
@@ -103,7 +102,6 @@ pub struct TransferTask {
     pub id: TransferId,
     pub state: TransferState,
     pub builder: Box<dyn TransferProtocolBuilder>,
-    pub bytes_tx: mpsc::UnboundedSender<u64>,
     pub created_at: Instant,
     pub started_at: Option<Instant>,
     pub completed_at: Option<Instant>,

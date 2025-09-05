@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock, broadcast};
 use bytes::Bytes;
 use futures::Stream;
+use futures_util::SinkExt;
 use pin_project_lite::pin_project;
 use tokio_util::sync::CancellationToken;
 use crate::{TransferEvent, TransferId, TransferStats};
@@ -14,13 +15,13 @@ pin_project! {
     pub struct FileStream<S> {
         #[pin]
         inner: S,
-        bytes_tx: mpsc::UnboundedSender<u64>,
+        bytes_tx: Option<mpsc::UnboundedSender<u64>>,
         read_bytes: Option<u64>,
     }
 }
 
 impl<S> FileStream<S> {
-    pub fn new(inner: S, bytes_tx: mpsc::UnboundedSender<u64>) -> Self {
+    pub fn new(inner: S, bytes_tx: Option<mpsc::UnboundedSender<u64>>) -> Self {
         Self {
             inner,
             bytes_tx,
@@ -39,8 +40,10 @@ where
         let mut project = self.project();
         match project.inner.poll_next(cx) {
             Poll::Ready(Some(Ok(item))) => {
-                if project.read_bytes.is_some() {
-                    let _ = project.bytes_tx.send(project.read_bytes.unwrap());
+                if let Some(bytes_tx) = project.bytes_tx.as_ref() {
+                    if project.read_bytes.is_some() {
+                        let _ = bytes_tx.send(project.read_bytes.unwrap());
+                    }
                 }
 
                 *project.read_bytes = Some(item.len() as u64);
@@ -48,7 +51,10 @@ where
                 Poll::Ready(Some(Ok(item)))
             },
             Poll::Ready(None) => {
-                let _ = project.bytes_tx.send(project.read_bytes.unwrap());
+                if let Some(bytes_tx) = project.bytes_tx.as_ref() {
+                    let _ = bytes_tx.send(project.read_bytes.unwrap());
+                }
+
                 *project.read_bytes = Some(0);
                 Poll::Ready(None)
             },
@@ -185,14 +191,22 @@ impl ProgressAggregator {
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {
                         let mut stats_vec = Vec::new();
                         let trackers_guard = trackers.read().await;
+
                         for item in trackers_guard.iter() {
                             let stats = item.1.tracker.lock().await.get_stats().await;
                             stats_vec.push((item.0.clone(), stats));
                         }
                         
-                        let _ = event_tx.send(TransferEvent::Progress {
+                        let result = event_tx.send(TransferEvent::Progress {
                             updates: stats_vec
                         });
+
+                        match result {
+                            Ok(_) => {},
+                            Err(err) => {
+                                println!("Error sending progress event: {}", err);
+                            }
+                        }
                     }
                 }
             }

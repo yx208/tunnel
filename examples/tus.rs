@@ -13,17 +13,17 @@ use tunnel::{
 #[tokio::main]
 async fn main() -> Result<()> {
     let tunnel = Tunnel::new();
-    tunnel.add_task(Box::new(create_task_builder())).await?;
-    tunnel.add_task(Box::new(create_task_builder())).await?;
-    tunnel.add_task(Box::new(create_task_builder())).await?;
 
     tokio::spawn(handle_transfer_event(tunnel.subscribe()));
 
-    // let handle = tokio::spawn(async move {
-    //     tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
-    //     let _ = tunnel.cancel_task(task_id).await;
-    // });
-    // let _ = tokio::join!(handle);
+    let task1 = tunnel.add_task(Box::new(create_task_builder())).await?;
+    tunnel.add_task(Box::new(create_task_builder())).await?;
+    tunnel.add_task(Box::new(create_task_builder())).await?;
+
+    let _ = tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
+        let _ = tunnel.cancel_task(task1).await;
+    }).await;
 
     run().await;
 
@@ -48,12 +48,13 @@ async fn handle_transfer_event(mut event_tx: broadcast::Receiver<TransferEvent>)
     while let Ok(event) = event_tx.recv().await {
         match event {
             TransferEvent::Progress { updates } => {
-                let sum_speed = updates
-                    .iter()
-                    .map(|(_, x)| x.instant_speed)
-                    .sum::<f64>();
-                if sum_speed != 0.0 {
-                    println!("Current speed: {:.2?}MB/s", sum_speed  / 1024.0 / 1024.0);
+                println!("===================");
+                for update in updates {
+                    println!(
+                        "Task {:?}: {:.2?}MB/s",
+                        update.0,
+                        update.1.instant_speed  / 1024.0 / 1024.0
+                    );
                 }
             }
             _ => {}

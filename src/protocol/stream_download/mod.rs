@@ -24,7 +24,7 @@ impl TransferProtocol for StreamDownloadProtocol {
         todo!()
     }
 
-    async fn execute(&self, ctx: &TransferContext, progress_tx: UnboundedSender<u64>) -> Result<()> {
+    async fn execute(&self, ctx: &TransferContext, progress_tx: Option<UnboundedSender<u64>>) -> Result<()> {
         todo!()
     }
 }

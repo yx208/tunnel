@@ -2,11 +2,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use futures_util::StreamExt;
-use tokio::sync::{broadcast, mpsc, oneshot, OwnedSemaphorePermit, RwLock, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 use crate::progress::ProgressAggregator;
-use crate::{TransferEvent, TransferId, TransferState, TransferTask};
+use crate::{TransferContext, TransferEvent, TransferId, TransferProtocol, TransferState, TransferTask};
 use super::{
     Result,
     TransferError,
@@ -16,7 +15,6 @@ use super::{
 pub enum ManagerCommand {
     AddTask {
         builder: Box<dyn TransferProtocolBuilder>,
-        bytes_tx: mpsc::UnboundedSender<u64>,
         reply: oneshot::Sender<Result<TransferId>>,
     },
     PauseTask {
@@ -33,7 +31,6 @@ pub enum ManagerCommand {
 pub struct Tunnel {
     command_tx: mpsc::UnboundedSender<ManagerCommand>,
     event_tx: broadcast::Sender<TransferEvent>,
-    aggregator: ProgressAggregator,
     cancellation_token: CancellationToken,
 }
 
@@ -50,14 +47,7 @@ impl Tunnel {
         );
         tokio::spawn(command_handler.run());
 
-        let aggregator = ProgressAggregator {
-            trackers: Default::default(),
-            event_tx: event_tx.clone(),
-            cancellation_token: cancellation_token.clone(),
-        }.enable_report();
-
         Self {
-            aggregator,
             command_tx,
             event_tx,
             cancellation_token
@@ -70,31 +60,25 @@ impl Tunnel {
 
     pub async fn shutdown(&mut self) {
         self.cancellation_token.cancel();
-        self.aggregator.clear().await;
         self.event_tx.closed().await;
         self.command_tx.closed().await;
     }
 
     pub async fn add_task(&self, builder: Box<dyn TransferProtocolBuilder>) -> Result<TransferId> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let (bytes_tx, bytes_rx) = mpsc::unbounded_channel();
 
         self.command_tx
-            .send(ManagerCommand::AddTask { builder, reply: reply_tx, bytes_tx })
+            .send(ManagerCommand::AddTask { builder, reply: reply_tx })
             .map_err(|_| TransferError::ManagerShutdown)?;
 
         let id = reply_rx
             .await
             .map_err(|_| TransferError::ManagerShutdown)??;
 
-        self.aggregator.registry_task(id.clone(), bytes_rx).await;
-
         Ok(id)
     }
 
     pub async fn cancel_task(&self, id: TransferId) -> Result<()> {
-        self.aggregator.unregister_task(&id).await;
-
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
             .send(ManagerCommand::CancelTask { id, reply: reply_tx })
@@ -106,7 +90,6 @@ impl Tunnel {
     }
 
     pub async fn pause_task(&self, id: TransferId) -> Result<()> {
-        self.aggregator.unregister_task(&id).await;
         let (reply_tx, reply_rx) = oneshot::channel();
 
         self.command_tx
@@ -118,9 +101,8 @@ impl Tunnel {
         Ok(())
     }
 
-    pub async fn resume_task(&self, id: TransferId) -> Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let (bytes_tx, bytes_rx) = mpsc::unbounded_channel();
+    pub async fn resume_task(&self, _id: TransferId) -> Result<()> {
+        let (_reply_tx, reply_rx) = oneshot::channel();
 
         self.command_tx
             .send(ManagerCommand::ResumeTask)
@@ -130,8 +112,6 @@ impl Tunnel {
             .await
             .map_err(|_| TransferError::ManagerShutdown)?;
 
-        self.aggregator.registry_task(id.clone(), bytes_rx).await;
-
         Ok(())
     }
 }
@@ -140,15 +120,7 @@ impl Tunnel {
 struct TaskManager {
     tasks: HashMap<TransferId, TransferTask>,
     pending_tasks: VecDeque<TransferId>,
-    running_tasks: HashMap<TransferId, JoinHandle<()>>,
-}
-
-enum ManagerWorkerEvent {
-    Execute {
-        id: TransferId,
-        permit: OwnedSemaphorePermit,
-        event_tx: broadcast::Sender<TransferEvent>,
-    },
+    running_tasks: HashMap<TransferId, CancellationToken>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,14 +146,14 @@ struct CommandHandler {
     /// Inner event receiver
     task_event_rx: mpsc::UnboundedReceiver<TaskExecuteEvent>,
 
-    /// Handle task
-    worker_event_tx: mpsc::UnboundedSender<ManagerWorkerEvent>,
-
     /// Semaphore, concurrent
     semaphore: Arc<Semaphore>,
 
     /// Cancellation token
-    cancellation_token: CancellationToken,
+    system_token: CancellationToken,
+
+    /// Progress
+    aggregator: ProgressAggregator,
 }
 
 impl CommandHandler {
@@ -190,26 +162,31 @@ impl CommandHandler {
         command_rx: mpsc::UnboundedReceiver<ManagerCommand>,
         event_tx: broadcast::Sender<TransferEvent>,
     ) -> Self {
-        let (worker_event_tx, worker_event_rx) = mpsc::unbounded_channel();
         let (task_event_tx, task_event_rx) = mpsc::unbounded_channel();
-        let manager: Arc<RwLock<TaskManager>> = Default::default();
+        let manager = Default::default();
+
+        let aggregator = ProgressAggregator {
+            trackers: Default::default(),
+            event_tx: event_tx.clone(),
+            cancellation_token: cancellation_token.clone(),
+        }.enable_report();
 
         Self {
             command_rx,
             event_tx,
-            worker_event_tx,
-            cancellation_token,
+            system_token: cancellation_token,
             task_event_tx,
             task_event_rx,
             manager,
-            semaphore: Arc::new(Semaphore::new(3)),
+            aggregator,
+            semaphore: Arc::new(Semaphore::new(1)),
         }
     }
 
     async fn run(mut self) {
         loop {
             tokio::select! {
-                _ = self.cancellation_token.cancelled() => break,
+                _ = self.system_token.cancelled() => break,
                 Some(command) = self.command_rx.recv() => {
                     self.handle_command(command).await;
                 }
@@ -222,13 +199,20 @@ impl CommandHandler {
 
     async fn handle_command(&mut self, command: ManagerCommand) {
         match command {
-            ManagerCommand::AddTask { reply, builder, bytes_tx, .. } => {
-                let result = self.add_task(builder, bytes_tx).await;
+            ManagerCommand::AddTask { reply, builder } => {
+                let result = self.add_task(builder).await;
                 let _ = reply.send(result);
+                self.schedule_task().await;
             }
             ManagerCommand::PauseTask { .. } => {}
             ManagerCommand::ResumeTask => {}
-            ManagerCommand::CancelTask { .. } => {}
+            ManagerCommand::CancelTask { id, reply } => {
+                let _ = self.cancel_task(id).await;
+                self.aggregator.unregister_task(&id).await;
+                let _ = reply.send(());
+                let _ = self.event_tx.send(TransferEvent::Cancelled { id });
+                self.schedule_task().await;
+            }
         }
     }
 
@@ -237,7 +221,6 @@ impl CommandHandler {
             TaskExecuteEvent::Execute { id } => {
                 let _ = self.event_tx.send(TransferEvent::Started { id });
                 let mut manager = self.manager.write().await;
-                manager.pending_tasks.retain(|x| *x != id);
                 if let Some(task) = manager.tasks.get_mut(&id) {
                     task.state = TransferState::Running;
                     task.started_at = Some(Instant::now());
@@ -255,24 +238,19 @@ impl CommandHandler {
                 drop(manager);
 
                 if self.semaphore.available_permits() != 0 {
-                    self.try_execute_next().await;
+                    self.schedule_task().await;
                 }
             }
             TaskExecuteEvent::Failed { .. } => {}
         }
     }
 
-    async fn add_task(
-        &mut self,
-        builder: Box<dyn TransferProtocolBuilder>,
-        bytes_tx: mpsc::UnboundedSender<u64>
-    ) -> Result<TransferId> {
+    async fn add_task(&mut self, builder: Box<dyn TransferProtocolBuilder>) -> Result<TransferId> {
         let id = TransferId::new();
         let task = TransferTask {
             id: id.clone(),
-            state: TransferState::Queued,
             builder,
-            bytes_tx,
+            state: TransferState::Queued,
             created_at: Instant::now(),
             started_at: None,
             completed_at: None,
@@ -281,16 +259,16 @@ impl CommandHandler {
         let mut manager = self.manager.write().await;
         manager.tasks.insert(id.clone(), task);
         manager.pending_tasks.push_front(id);
-        drop(manager);
-
-        if self.semaphore.available_permits() != 0 {
-            self.try_execute_next().await;
-        }
 
         Ok(id)
     }
 
-    async fn try_execute_next(&self) {
+    async fn schedule_task(&self) {
+        if self.semaphore.available_permits() == 0 {
+            println!("meiyou");
+            return;
+        }
+
         let mut manager = self.manager.write().await;
         let next_id = match manager.pending_tasks.pop_back() {
             Some(id) => id,
@@ -304,39 +282,83 @@ impl CommandHandler {
             .unwrap();
 
         if let Some(task) = manager.tasks.get_mut(&next_id) {
-            let task_event_tx = self.task_event_tx.clone();
-            let progress_tx = task.bytes_tx.clone();
-            
+            // progress
+            let (bytes_tx, bytes_rx) = mpsc::unbounded_channel();
+            self.aggregator.registry_task(task.id, bytes_rx).await;
+
+            // 协议
             let mut context = task.builder.build_context();
             let protocol = task.builder.build_protocol();
 
+            // inner vars
             let transfer_id = next_id.clone();
-            let handle = tokio::spawn(async move {
-                // initialize
-                if let Err(error) = protocol.initialize(&mut context).await {
-                    let _ = task_event_tx.send(TaskExecuteEvent::Failed {
-                        id: transfer_id.clone(),
-                        reason: error.to_string()
-                    });
-                };
-                
-                // execute
-                match protocol.execute(&context, progress_tx).await {
-                    Ok(_) => {
-                        let _ = task_event_tx.send(TaskExecuteEvent::Completed { id: transfer_id });
+            let task_event_tx = self.task_event_tx.clone();
+            
+            // token
+            let cancellation_token = CancellationToken::new();
+            let task_token = cancellation_token.clone();
+
+            tokio::spawn(async move {
+                let result = protocol.initialize(&mut context).await;
+                let future = CommandHandler::execute_task(protocol, bytes_tx, context, );
+                let _ = task_event_tx.send(TaskExecuteEvent::Execute { id: transfer_id });
+                tokio::select! {
+                    _ = task_token.cancelled() => {
+                        println!("Cancelled task");
+                        drop(permit);
                     },
-                    Err(error) => {
-                        let _ = task_event_tx.send(TaskExecuteEvent::Failed {
-                            id: transfer_id.clone(),
-                            reason: error.to_string()
-                        });
+                    result = future => {
+                        match result {
+                            Ok(_) => {
+                                let _ = task_event_tx.send(TaskExecuteEvent::Completed { id: transfer_id });
+                            }
+                            Err(err) => {
+                                let _ = task_event_tx.send(TaskExecuteEvent::Failed {
+                                    id: transfer_id,
+                                    reason: err.to_string()
+                                });
+                            }
+                        }
                     }
                 }
-                
-                drop(permit);
             });
 
-            manager.running_tasks.insert(next_id, handle);
+            // 插入任务
+            manager.running_tasks.insert(next_id, cancellation_token);
         }
+    }
+
+    async fn execute_task(
+        protocol: Box<dyn TransferProtocol>,
+        bytes_tx: mpsc::UnboundedSender<u64>,
+        mut context: TransferContext,
+    ) -> Result<()> {
+        protocol.initialize(&mut context).await?;
+        protocol.execute(&context, Some(bytes_tx)).await?;
+        Ok(())
+    }
+
+    async fn cancel_task(&self, id: TransferId) -> Result<()> {
+        let mut manager = self.manager.write().await;
+        if let Some(task) = manager.tasks.remove(&id) {
+            match task.state {
+                TransferState::Queued => {
+                    manager.pending_tasks.retain(|x| *x != id);
+                }
+                TransferState::Running => {
+                    println!("Cancel task: {:?}", id);
+                    if let Some(token) = manager.running_tasks.remove(&id) {
+                        token.cancelled_owned().await;
+                    }
+                }
+                _ => {}
+                // TransferState::Paused => {}
+                // TransferState::Completed => {}
+                // TransferState::Failed => {}
+                // TransferState::Cancelled => {}
+            }
+        }
+
+        Ok(())
     }
 }
